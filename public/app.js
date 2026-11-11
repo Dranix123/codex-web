@@ -2,7 +2,7 @@ const $=id=>document.getElementById(id);
 const drafts=new Map(),attachmentDrafts=new Map();
 let projectCatalog=[],selectedAttachments=[];
 let token='',allThreads=[],threadCursor=null,selected='',olderCursor=null,polling=false,loading=false;
-async function api(path,body){const r=await fetch(path,body?{method:'POST',headers:{'Content-Type':'application/json','X-Codexweb-Token':token},body:JSON.stringify(body)}:{});const x=await r.json();if(!r.ok)throw Error(x.error);return x;}
+async function api(path,body){const r=await fetch(path,body?{method:'POST',headers:{'Content-Type':'application/json','X-Codexweb-Token':token},body:JSON.stringify(body)}:{});const x=await r.json();if(r.status===401){location.replace('/');throw Error('请重新输入访问密码');}if(!r.ok)throw Error(x.error);return x;}
 function error(e){$('notice').textContent=e.message;$('notice').className='error';}
 function renderThreads(){const project=$('project').value,q=$('search').value.toLowerCase();$('threads').replaceChildren();for(const t of allThreads.filter(t=>(!project||t.projectId===project)&&t.title.toLowerCase().includes(q))){const b=document.createElement('button'),title=document.createElement('span');title.className='thread-title';title.textContent=t.title.slice(0,70);b.append(title);b.className=t.id===selected?'active':'';b.setAttribute('aria-current',t.id===selected?'true':'false');b.onclick=()=>select(t);$('threads').append(b);}if(!$('threads').childElementCount){const p=document.createElement('p');p.className='no-threads';p.textContent='没有匹配的对话';$('threads').append(p);}}
 async function threads(append=false){const r=await api('/api/threads'+(append&&threadCursor?'?cursor='+encodeURIComponent(threadCursor):''));allThreads=append?[...allThreads,...r.data]:r.data;threadCursor=r.nextCursor;$('moreThreads').hidden=!threadCursor;renderThreads();}
@@ -192,3 +192,5 @@ enhanceChoices(['project','newProject','model','effort','newModel','newEffort'],
   if(id==='model'||id==='newModel')return value?modelCatalog.find(m=>m.id===value)?.description||'':'跟随 Codex 默认模型';
   return value?{none:'不使用额外思考',minimal:'最少的思考深度',low:'较少的思考深度',medium:'适中的思考深度',high:'更深入地思考',xhigh:'更高的思考深度',max:'最高的思考深度',ultra:'最高思考深度，可自动分派任务'}[value]||'':'使用所选模型的默认思考强度';
 });
+
+$('lock').onclick=async()=>{await fetch('/auth/logout',{method:'POST'});location.replace('/');};

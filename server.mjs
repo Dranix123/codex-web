@@ -1,4 +1,5 @@
 import http from 'node:http';
+import {createPasswordGate} from './auth.mjs';
 import {readFile,writeFile,mkdir} from 'node:fs/promises';
 import {homedir} from 'node:os';
 import {execFile} from 'node:child_process';
@@ -7,6 +8,8 @@ import {randomBytes} from 'node:crypto';
 import {basename} from 'node:path';
 import {browseDirectory,resolveDirectory,resolveAttachments,saveUpload,MAX_UPLOAD_BYTES} from './local-files.mjs';
 import {DesktopIPC,Reader} from './bridge.mjs';
+const authConfig=await readFile(new URL('./.local/auth.json',import.meta.url),'utf8').then(JSON.parse).catch(e=>{if(e.code==='ENOENT')return {};throw e;});
+const passwordGate=createPasswordGate(authConfig.passwordHash);
 const ipc=new DesktopIPC(),reader=new Reader();
 await reader.connect();let ipcError=null;try{await ipc.connect();}catch(e){ipcError=e.message;}
 const csrf=randomBytes(24).toString('hex');
@@ -20,6 +23,7 @@ const server=http.createServer(async(req,res)=>{
  const json=(code,value)=>{res.writeHead(code,{'Content-Type':'application/json; charset=utf-8'});res.end(JSON.stringify(value));};
  try{
   const u=new URL(req.url,'http://localhost');
+  if(await passwordGate.handle(req,res,u))return;
   if(req.method==='POST'){
    if(req.headers['x-codexweb-token']!==csrf)return json(403,{error:'请求校验失败'});
    if(req.headers.origin&&new URL(req.headers.origin).host!==req.headers.host)return json(403,{error:'禁止跨站请求'});
