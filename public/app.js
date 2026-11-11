@@ -55,10 +55,10 @@ function applyTheme(){
 $('theme').onclick=()=>{themePreference=document.documentElement.dataset.theme==='dark'?'light':'dark';try{localStorage.setItem('codexweb-theme',themePreference);}catch{}applyTheme();};
 systemTheme.addEventListener('change',applyTheme);
 applyTheme();
-$('newThread').onclick=()=>{$('newProject').value=$('project').value;$('createStatus').textContent='对话将在所选项目中创建。';$('newDialog').showModal();};
+$('newThread').onclick=()=>{$('newProject').value=$('project').value;$('createStatus').textContent='对话将在所选项目中创建。';$('newDialog').showModal();document.dispatchEvent(new Event('choice:sync'));};
 $('cancelNew').onclick=()=>$('newDialog').close();
 $('newForm').onsubmit=async e=>{
-  e.preventDefault();const projectId=$('newProject').value;if(!projectId)return;
+  e.preventDefault();const projectId=$('newProject').value;if(!projectId){$('createStatus').textContent='请先选择一个项目';$('newProjectChoice').focus();return;}
   $('confirmNew').disabled=true;$('cancelNew').disabled=true;$('createStatus').textContent='正在创建对话…';
   const preventClose=e=>e.preventDefault();$('newDialog').addEventListener('cancel',preventClose);
   try{
@@ -138,7 +138,7 @@ $('projectForm').onsubmit=async e=>{
   e.preventDefault();if(!$('projectFolder').value){$('projectStatus').textContent='请先选择本机文件夹';return;}
   $('confirmProject').disabled=true;$('cancelProject').disabled=true;$('projectStatus').textContent='正在创建项目…';
   const preventClose=e=>e.preventDefault();$('projectDialog').addEventListener('cancel',preventClose);
-  try{const r=await api('/api/projects/create',{name:$('projectName').value,path:$('projectFolder').value,key:projectCreateKey});addProject(r.project);$('project').value=r.project.id;$('newProject').value=r.project.id;$('search').value='';renderThreads();$('projectNotice').hidden=false;$('projectNotice').textContent='项目已在网页中创建。桌面侧栏尚不能自动同步新增项目。';$('projectDialog').close();}
+  try{const r=await api('/api/projects/create',{name:$('projectName').value,path:$('projectFolder').value,key:projectCreateKey});addProject(r.project);$('project').value=r.project.id;$('newProject').value=r.project.id;$('search').value='';renderThreads();document.dispatchEvent(new Event('choice:sync'));$('projectNotice').hidden=false;$('projectNotice').textContent='项目已在网页中创建。桌面侧栏尚不能自动同步新增项目。';$('projectDialog').close();}
   catch(e){$('projectStatus').textContent=e.message;}
   finally{$('confirmProject').disabled=false;$('cancelProject').disabled=false;$('projectDialog').removeEventListener('cancel',preventClose);}
 };
@@ -186,3 +186,9 @@ $('uploadForm').onsubmit=async e=>{
     else $('uploadStatus').textContent='已上传并附加 '+completed+' 个文件。'+failed.map(f=>f.file.name+'：'+f.error).join('；')+'。重试前可检查目标文件夹。';
   }finally{uploading=false;for(const control of ['cancelUpload','chooseUploadFolder','chooseUploadFiles','uploadFiles'])$(control).disabled=false;renderUploadQueue();}
 };
+
+enhanceChoices(['project','newProject','model','effort','newModel','newEffort'],(id,value)=>{
+  if(id==='project'||id==='newProject')return value?projectCatalog.find(p=>p.id===value)?.roots?.map(r=>r.path).join(' · ')||'':id==='project'?'查看全部项目中的对话':'';
+  if(id==='model'||id==='newModel')return value?modelCatalog.find(m=>m.id===value)?.description||'':'跟随 Codex 默认模型';
+  return value?{none:'不使用额外思考',minimal:'最少的思考深度',low:'较少的思考深度',medium:'适中的思考深度',high:'更深入地思考',xhigh:'更高的思考深度',max:'最高的思考深度',ultra:'最高思考深度，可自动分派任务'}[value]||'':'使用所选模型的默认思考强度';
+});
