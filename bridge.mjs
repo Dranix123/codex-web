@@ -1,4 +1,5 @@
 import net from 'node:net';
+import {attachmentInput} from './local-files.mjs';
 import {randomUUID} from 'node:crypto';
 import {spawn,execFileSync} from 'node:child_process';
 import {createInterface} from 'node:readline';
@@ -19,7 +20,7 @@ export class DesktopIPC {
   async owner(id){return this.request('thread-owner-discovery',{hostId:'local',conversationId:id},1);}
   async modelSettings(id){return (await this.request('thread-follower-read-model-settings',{conversationId:id},1)).result.settings;}
   async setModel(id,model,effort){return (await this.request('thread-follower-update-thread-settings',{conversationId:id,threadSettings:{model,effort}},2)).result;}
-  async send(id,text){await this.owner(id);return this.request('thread-follower-start-turn',{conversationId:id,turnStart:{request:{threadId:id,input:[{type:'text',text,text_elements:[]}]},context:{inheritThreadSettings:true}}},2);}
+  async send(id,text,files=[]){await this.owner(id);return this.request('thread-follower-start-turn',{conversationId:id,turnStart:{request:{threadId:id,input:[...(text.trim()?[{type:'text',text,text_elements:[]}]:[]),...attachmentInput(files)]},context:{inheritThreadSettings:true}}},2);}
 }
 export class Reader {
   pending=new Map(); sequence=0;
@@ -36,6 +37,8 @@ export class Reader {
   }
   fail(e){for(const p of this.pending.values())p.reject(e);this.pending.clear();}
   rpc(method,params={}){if(!['initialize','project/list','thread/list','thread/read','thread/items/list','account/rateLimits/read','model/list'].includes(method))throw Error('只读客户端禁止此方法');return this.request(method,params);}
+  async listProjects(){const data=[];let cursor;do{const page=await this.rpc('project/list',{limit:100,cursor});data.push(...page.data);cursor=page.nextCursor;}while(cursor);return {data};}
+  async createProject(name,path,idempotencyKey){return (await this.request('project/create',{name,roots:[{path}],idempotencyKey})).project;}
   async createThread(project,model,effort){const {thread}=await this.request('thread/start',{projectId:project.id,cwd:project.roots[0].path,ephemeral:false,...model?{model}:{},...effort?{config:{model_reasoning_effort:effort}}:{}});await this.request('thread/name/set',{threadId:thread.id,name:'新对话'});await this.request('thread/unsubscribe',{threadId:thread.id});return {...thread,name:'新对话'};}
   request(method,params){return new Promise((resolve,reject)=>{const id=++this.sequence,timer=setTimeout(()=>{this.pending.delete(id);reject(Error(`${method} 超时`));},30000);this.pending.set(id,{resolve:v=>{clearTimeout(timer);resolve(v);},reject:e=>{clearTimeout(timer);reject(e);}});this.process.stdin.write(JSON.stringify({id,method,params})+'\n');});}
 }

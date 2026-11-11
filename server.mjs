@@ -4,6 +4,8 @@ import {homedir} from 'node:os';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {randomBytes} from 'node:crypto';
+import {basename} from 'node:path';
+import {browseDirectory,resolveDirectory,resolveAttachments,saveUpload,MAX_UPLOAD_BYTES} from './local-files.mjs';
 import {DesktopIPC,Reader} from './bridge.mjs';
 const ipc=new DesktopIPC(),reader=new Reader();
 await reader.connect();let ipcError=null;try{await ipc.connect();}catch(e){ipcError=e.message;}
@@ -21,10 +23,31 @@ const server=http.createServer(async(req,res)=>{
   if(req.method==='POST'){
    if(req.headers['x-codexweb-token']!==csrf)return json(403,{error:'请求校验失败'});
    if(req.headers.origin&&new URL(req.headers.origin).host!==req.headers.host)return json(403,{error:'禁止跨站请求'});
+   if(u.pathname==='/api/files/upload'){
+    if(req.headers['content-type']!=='application/octet-stream')return json(415,{error:'需要文件二进制内容'});
+    if(Number(req.headers['content-length'])>MAX_UPLOAD_BYTES)return json(413,{error:'单个文件不能超过 50 MB'});
+    const id=u.searchParams.get('id');if(!/^[a-zA-Z0-9-]{10,80}$/.test(id||''))return json(400,{error:'请先选择对话'});
+    const {thread}=await reader.rpc('thread/read',{threadId:id});
+    try{const file=await saveUpload(u.searchParams.get('folder')||thread.cwd,u.searchParams.get('name'),req.iterator({destroyOnReturn:false}));return json(201,{file});}
+    catch(e){req.resume();return json(400,{error:'上传失败：'+e.message});}
+   }
    if(req.headers['content-type']!=='application/json')return json(415,{error:'需要 JSON'});
    let raw='';for await(const chunk of req){raw+=chunk;if(Buffer.byteLength(raw)>65536)return json(413,{error:'消息过长'});}const b=JSON.parse(raw);
+   if(u.pathname==='/api/files/browse'){
+    try{return json(200,await browseDirectory(b.path||homedir(),b.foldersOnly===true));}catch(e){return json(400,{error:'无法打开文件夹：'+e.message});}
+   }
+   if(u.pathname==='/api/files/resolve'){
+    try{return json(200,{files:await resolveAttachments(b.paths)});}catch(e){return json(400,{error:e.message});}
+   }
+   if(u.pathname==='/api/projects/create'){
+    if(typeof b.name!=='string'||!b.name.trim()||b.name.trim().length>128)return json(400,{error:'请输入项目名称（最多 128 字）'});
+    if(typeof b.key!=='string'||!/^[-a-zA-Z0-9]{10,80}$/.test(b.key))return json(400,{error:'无效的创建请求'});
+    let path;try{path=await resolveDirectory(b.path);}catch(e){return json(400,{error:'无法使用此文件夹：'+e.message});}
+    const project=await reader.createProject(b.name.trim(),path,b.key);
+    return json(201,{project});
+   }
    if(u.pathname==='/api/create'){
-    const {data:projects}=await reader.rpc('project/list',{});
+    const {data:projects}=await reader.listProjects();
     const project=projects.find(p=>p.id===b.projectId);
     if(!project?.roots?.length)return json(400,{error:'请选择有效的项目'});
     let model;
@@ -38,12 +61,12 @@ const server=http.createServer(async(req,res)=>{
    if(!/^[a-zA-Z0-9-]{10,80}$/.test(b.id||''))return json(400,{error:'无效对话'});
    if(u.pathname==='/api/model'){const {data:models}=await reader.rpc('model/list',{limit:100});const model=models.find(m=>m.model===b.model&&!m.hidden);if(!model)return json(400,{error:'无效模型'});if(b.effort!=null&&b.effort!==''&&!model.supportedReasoningEfforts.some(e=>e.reasoningEffort===b.effort))return json(400,{error:'该模型不支持这个思考强度'});const result=await ipc.setModel(b.id,model.model,b.effort||model.defaultReasoningEffort);if(!result.applied)return json(409,{error:'模型设置未应用，请重新选择对话'});return json(200,result);}
    if(u.pathname==='/api/open'){await openThread(b.id);return json(200,{ok:true});}
-   if(u.pathname==='/api/send'){if(typeof b.text!=='string'||!b.text.trim())return json(400,{error:'请输入消息'});if(ipcError)throw Error(ipcError);await ipc.send(b.id,b.text);return json(200,{ok:true});}
+   if(u.pathname==='/api/send'){if(typeof b.text!=='string')return json(400,{error:'无效消息'});let files;try{files=await resolveAttachments(b.files);}catch(e){return json(400,{error:e.message});}if(!b.text.trim()&&!files.length)return json(400,{error:'请输入消息或附加文件'});if(ipcError)throw Error(ipcError);await ipc.send(b.id,b.text,files);return json(200,{ok:true});}
    return json(404,{error:'未找到'});
   }
   if(req.method!=='GET')return json(405,{error:'方法不支持'});
   if(u.pathname==='/api/bootstrap'){
-   const [projects,s]=await Promise.all([reader.rpc('project/list',{}),state()]);return json(200,{projects:projects.data,token:csrf,ipcError,selectedProject:s['selected-project'],notice:'消息由桌面 App 处理；未打开的对话请先在桌面打开。网页选择独立于桌面当前标签。'});
+   const [projects,s]=await Promise.all([reader.listProjects(),state()]);return json(200,{projects:projects.data,token:csrf,ipcError,selectedProject:s['selected-project'],notice:'消息由桌面 App 处理；未打开的对话请先在桌面打开。网页选择独立于桌面当前标签。'});
   }
   if(u.pathname==='/api/threads'){
    const result=await reader.rpc('thread/list',{limit:100,cursor:u.searchParams.get('cursor')||null,useStateDbOnly:true,sortKey:'updated_at'}),s=await state();
@@ -53,7 +76,7 @@ const server=http.createServer(async(req,res)=>{
   }
   if(u.pathname==='/api/messages'){
    const id=u.searchParams.get('id');const r=await reader.rpc('thread/items/list',{threadId:id,limit:100,sortDirection:'desc',cursor:u.searchParams.get('cursor')||null});
-   const messages=r.data.flatMap(({item,turnId})=>item.type==='agentMessage'?[{id:item.id,turnId,role:'assistant',text:item.text}]:item.type==='userMessage'?[{id:item.id,turnId,role:'user',text:item.content.filter(c=>c.type==='text').map(c=>c.text).join('\n')}]:[]).reverse();
+   const messages=r.data.flatMap(({item,turnId})=>item.type==='agentMessage'?[{id:item.id,turnId,role:'assistant',text:item.text}]:item.type==='userMessage'?[{id:item.id,turnId,role:'user',text:item.content.map(c=>c.type==='text'?c.text:c.type==='mention'?'📎 '+c.name:c.type==='localImage'?'📎 '+basename(c.path):c.type==='image'?'📎 图片':'').filter(Boolean).join('\n')}]:[]).reverse();
    return json(200,{messages,nextCursor:r.nextCursor});
   }
   if(u.pathname==='/api/limits'){const r=await reader.rpc('account/rateLimits/read');return json(200,{rateLimits:r.rateLimits,rateLimitsByLimitId:r.rateLimitsByLimitId});}

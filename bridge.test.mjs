@@ -18,3 +18,8 @@ test('新对话先持久化名称，再释放给桌面，使用项目目录',asy
  assert.deepEqual(calls.map(c=>c.method),['thread/start','thread/name/set','thread/unsubscribe']);
  assert.equal(calls[0].params.cwd,'/tmp/project');assert.equal(calls[0].params.projectId,'project');assert.ok(!('model' in calls[0].params));
 });
+test('项目列表读取所有分页，保留末页新建的项目',async()=>{
+ const reader=new Reader();
+ reader.rpc=async(method,params)=>{assert.equal(method,'project/list');return params.cursor?{data:[{id:'new-project'}],nextCursor:null}:{data:[{id:'existing-project'}],nextCursor:'next-page'};};
+ assert.deepEqual((await reader.listProjects()).data.map(p=>p.id),['existing-project','new-project']);
+});
