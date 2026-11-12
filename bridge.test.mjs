@@ -44,6 +44,7 @@ test('问题答案通过原请求提交，不启动新一轮；过期或不完�
  const answers={choice:{answers:['A']},note:{answers:['自定义答案']}};
  await bridge.answer('thread',9,answers);
  assert.deepEqual(calls,[['thread-follower-submit-user-input',{conversationId:'thread',requestId:9,response:{answers}},1]]);
+ bridge.snapshot=async()=>({requests:[{id:9,method:'item/tool/requestUserInput',params:{questions:[]}}]});
  await assert.rejects(bridge.send('thread','普通消息'),/先在问题区域/);
  assert.equal(calls.length,1);
 });
@@ -55,7 +56,7 @@ test('异步提问使用桌面原生问题回复格式，已回答项不再显�
  const questions=pendingQuestions(state),q=questions[0].questions[0];
  assert.equal(q.id,JSON.stringify(['request_user_input_async','async-item',0]));
  assert.equal(questions[0].isBlocking,false);
- const bridge=new DesktopIPC(),calls=[];bridge.questions=async()=>questions;bridge.request=async(...args)=>calls.push(args);
+ const bridge=new DesktopIPC(),calls=[];bridge.questions=async()=>questions;bridge.snapshot=async()=>({requests:[]});bridge.request=async(...args)=>calls.push(args);
  await bridge.answer('thread',questions[0].requestId,{[q.id]:{answers:['蓝色']}});
  const [method,params,version]=calls[0];assert.equal(method,'thread-follower-start-turn');assert.equal(version,2);
  const content=params.turnStart.request.input;
@@ -113,4 +114,16 @@ test('无项目对话启动失败时移除新建的空目录',async()=>{
  reader.request=async(method,params)=>{cwd=params.cwd;throw Error('start failed');};
  await assert.rejects(reader.createThread(null),/start failed/);
  await assert.rejects(stat(cwd),{code:'ENOENT'});
+});
+
+
+test('旧对话继承历史 effort，新设置优先且发送沿用同一 collaborationMode',async()=>{
+ const {inheritedModelSettings,inheritedTurnSettings}=await import('./bridge.mjs');
+ const state={requests:[],latestModel:'model',latestReasoningEffort:'low',latestCollaborationMode:{mode:'default',settings:{model:'model',reasoning_effort:'low'}},turns:[{params:{effort:'high'}}]};
+ assert.equal(inheritedModelSettings({model:'model',reasoningEffort:'low'},state).reasoningEffort,'high');
+ const bridge=new DesktopIPC();bridge.snapshot=async()=>state;let request;
+ bridge.request=async(method,params)=>{request=params.turnStart.request;};await bridge.send('thread','继续');
+ assert.equal(request.effort,'high');assert.equal(request.collaborationMode.settings.reasoning_effort,'high');
+ state.latestThreadSettings={effort:'medium'};assert.equal(inheritedTurnSettings(state).effort,'medium');
+ state.latestThreadSettings.effort=null;assert.equal(inheritedModelSettings({},state).reasoningEffort,null);
 });

@@ -73,14 +73,24 @@ export class DesktopIPC {
     if(request.kind==='async'){
       if(questions.some(q=>q.isBlocking))throw Error('请先回答当前的必答问题');
       const replies=request.questions.map(q=>({questionItemId:q.id,question:q.question,answer:response.answers[q.id].answers[0]}));
+      const state=await this.snapshot(id);
       const text='<send_user_message_question_reply>\n'+JSON.stringify(replies)+'\n</send_user_message_question_reply>';
-      return this.request('thread-follower-start-turn',{conversationId:id,turnStart:{request:{threadId:id,input:[{type:'text',text,text_elements:[]}]},context:{inheritThreadSettings:true}}},2);
+      return this.request('thread-follower-start-turn',{conversationId:id,turnStart:{request:{threadId:id,...inheritedTurnSettings(state),input:[{type:'text',text,text_elements:[]}]},context:{inheritThreadSettings:true}}},2);
     }
     return this.request('thread-follower-submit-user-input',{conversationId:id,requestId,response},1);
   }
-  async modelSettings(id){return (await this.request('thread-follower-read-model-settings',{conversationId:id},1)).result.settings;}
+  async stop(id,expectedTurnId){
+    const activity=conversationActivity(await this.snapshot(id));
+    if(!activity.turnId||activity.turnId!==expectedTurnId)return {stopped:false};
+    const r=await this.request('thread-follower-interrupt-turn',{conversationId:id,mode:'user-stop',expectedTurnId},4);
+    return {stopped:Boolean(r.result.interruptedTurnId)};
+  }
+  async modelSettings(id){
+    const settings=(await this.request('thread-follower-read-model-settings',{conversationId:id},1)).result.settings;
+    const state=await this.snapshot(id);return inheritedModelSettings(settings,state);
+  }
   async setModel(id,model,effort){return (await this.request('thread-follower-update-thread-settings',{conversationId:id,threadSettings:{model,effort}},2)).result;}
-  async send(id,text,files=[]){if((await this.questions(id)).some(q=>q.isBlocking))throw Error('请先在问题区域提交答案');return this.request('thread-follower-start-turn',{conversationId:id,turnStart:{request:{threadId:id,input:[...(text.trim()?[{type:'text',text,text_elements:[]}]:[]),...attachmentInput(files)]},context:{inheritThreadSettings:true}}},2);}
+  async send(id,text,files=[],clientMessageId){const state=await this.snapshot(id);if(pendingQuestions(state).some(q=>q.isBlocking))throw Error('请先在问题区域提交答案');return this.request('thread-follower-start-turn',{conversationId:id,turnStart:{request:{threadId:id,...inheritedTurnSettings(state),...clientMessageId?{clientUserMessageId:clientMessageId}:{},input:[...(text.trim()?[{type:'text',text,text_elements:[]}]:[]),...attachmentInput(files)]},context:{inheritThreadSettings:true}}},2);}
 }
 export class Reader {
   pending=new Map(); sequence=0;
@@ -138,4 +148,32 @@ export function pendingQuestions(state){
     if(questions.length)pending.push({requestId:'async:'+item.id,kind:'async',isBlocking:false,questions});
   }
   return pending;
+}
+
+export function inheritedModelSettings(settings,state){
+ const next=state.latestThreadSettings;
+ const history=state.turnHistory?.kind==='canonical'?state.turnHistory.history:null;
+ const turns=history?(history.islands||[]).flatMap(island=>island.entries.map(e=>history.entitiesByKey[e.value])).filter(Boolean):state.turns||[];
+ const previous=turns.findLast(t=>t.params?.effort!==undefined||t.params?.collaborationMode?.settings?.reasoning_effort!==undefined)?.params;
+ let effort;
+ if(next&&Object.hasOwn(next,'effort'))effort=next.effort;
+ else if(next?.collaborationMode?.settings&&Object.hasOwn(next.collaborationMode.settings,'reasoning_effort'))effort=next.collaborationMode.settings.reasoning_effort;
+ else if(previous?.effort!==undefined)effort=previous.effort;
+ else if(previous?.collaborationMode?.settings?.reasoning_effort!==undefined)effort=previous.collaborationMode.settings.reasoning_effort;
+ else effort=settings?.reasoningEffort??state.latestReasoningEffort??state.latestCollaborationMode?.settings?.reasoning_effort??null;
+ return {...settings,model:next?.model??settings?.model??state.latestModel,reasoningEffort:effort};
+}
+
+export function inheritedTurnSettings(state){
+ const effort=inheritedModelSettings(null,state).reasoningEffort;
+ if(effort==null)return {};
+ const mode=state.latestCollaborationMode;
+ return {effort,...mode?{collaborationMode:{...mode,settings:{...mode.settings,reasoning_effort:effort}}}:{}};
+}
+
+export function conversationActivity(state){
+ const history=state.turnHistory?.kind==='canonical'?state.turnHistory.history:null;
+ const turns=history?(history.islands||[]).flatMap(island=>island.entries.map(e=>history.entitiesByKey[e.value])).filter(Boolean):state.turns||[];
+ const latest=turns.findLast(t=>t.turnId!=null);
+ return {running:state.threadRuntimeStatus?.type==='active'||latest?.status==='inProgress',turnId:latest?.status==='inProgress'?latest.turnId:null};
 }

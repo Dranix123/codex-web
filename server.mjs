@@ -9,12 +9,14 @@ import {promisify} from 'node:util';
 import {randomBytes} from 'node:crypto';
 import {basename} from 'node:path';
 import {browseDirectory,resolveDirectory,resolveAttachments,saveUpload,MAX_UPLOAD_BYTES} from './local-files.mjs';
-import {DesktopIPC,Reader} from './bridge.mjs';
+import {DesktopIPC,Reader,pendingQuestions,conversationActivity} from './bridge.mjs';
+import {SendReceipts} from './send-receipts.mjs';
 const authConfig=await readFile(new URL('./.local/auth.json',import.meta.url),'utf8').then(JSON.parse).catch(e=>{if(e.code==='ENOENT')return {};throw e;});
 const passwordGate=createPasswordGate(authConfig.passwordHash);
 const ipc=new DesktopIPC(),reader=new Reader();
 await reader.connect();let ipcError=null;try{await ipc.connect();}catch(e){ipcError=e.message;}
 const csrf=randomBytes(24).toString('hex');
+const sendReceipts=new SendReceipts();
 setInterval(()=>{if(ipc.watchedThreads.size&&Date.now()>ipc.sidebarWatchUntil)ipc.watchThreads([]);},15000).unref();
 const state=async()=>JSON.parse(await readFile(`${homedir()}/.codex/.codex-global-state.json`,'utf8'));
 const createdPath=new URL('./.local/threads.json',import.meta.url);
@@ -83,10 +85,11 @@ const server=http.createServer(async(req,res)=>{
     return json(201,{thread:publicThread(thread),warning});
    }
    if(!/^[a-zA-Z0-9-]{10,80}$/.test(b.id||''))return json(400,{error:'无效对话'});
-   if(u.pathname==='/api/model'){const {data:models}=await reader.rpc('model/list',{limit:100});const model=models.find(m=>m.model===b.model&&!m.hidden);if(!model)return json(400,{error:'无效模型'});if(b.effort!=null&&b.effort!==''&&!model.supportedReasoningEfforts.some(e=>e.reasoningEffort===b.effort))return json(400,{error:'该模型不支持这个思考强度'});const result=await ipc.setModel(b.id,model.model,b.effort||model.defaultReasoningEffort);if(!result.applied)return json(409,{error:'模型设置未应用，请重新选择对话'});return json(200,result);}
+   if(u.pathname==='/api/model'){const {data:models}=await reader.rpc('model/list',{limit:100});const model=models.find(m=>m.model===b.model&&!m.hidden);if(!model)return json(400,{error:'无效模型'});if(b.effort!=null&&b.effort!==''&&!model.supportedReasoningEfforts.some(e=>e.reasoningEffort===b.effort))return json(400,{error:'该模型不支持这个思考强度'});const result=await ipc.setModel(b.id,model.model,b.effort||undefined);if(!result.applied)return json(409,{error:'模型设置未应用，请重新选择对话'});return json(200,result);}
    if(u.pathname==='/api/open'){await openThread(b.id);return json(200,{ok:true});}
+   if(u.pathname==='/api/stop'){if(typeof b.turnId!=='string'||!b.turnId)return json(400,{error:'缺少当前轮次'});return json(200,await ipc.stop(b.id,b.turnId));}
    if(u.pathname==='/api/questions/answer'){await ipc.answer(b.id,b.requestId,b.answers);return json(200,{ok:true});}
-   if(u.pathname==='/api/send'){if(typeof b.text!=='string')return json(400,{error:'无效消息'});let files;try{files=await resolveAttachments(b.files);}catch(e){return json(400,{error:e.message});}if(!b.text.trim()&&!files.length)return json(400,{error:'请输入消息或附加文件'});if(ipcError)throw Error(ipcError);await ipc.send(b.id,b.text,files);return json(200,{ok:true});}
+   if(u.pathname==='/api/send'){if(typeof b.text!=='string')return json(400,{error:'无效消息'});let files;try{files=await resolveAttachments(b.files);}catch(e){return json(400,{error:e.message});}if(!b.text.trim()&&!files.length)return json(400,{error:'请输入消息或附加文件'});if(ipcError)throw Error(ipcError);if(b.clientMessageId!=null&&!/^[a-f0-9-]{36}$/.test(b.clientMessageId))return json(400,{error:'无效消息标识'});await sendReceipts.send(b.clientMessageId,b.id,()=>ipc.send(b.id,b.text,files,b.clientMessageId));return json(200,{ok:true});}
    return json(404,{error:'未找到'});
   }
   if(req.method!=='GET')return json(405,{error:'方法不支持'});
@@ -101,9 +104,9 @@ const server=http.createServer(async(req,res)=>{
   }
   if(u.pathname==='/api/messages'){
    const id=u.searchParams.get('id');const r=await reader.rpc('thread/items/list',{threadId:id,limit:100,sortDirection:'desc',cursor:u.searchParams.get('cursor')||null});
-   const messages=r.data.flatMap(({item,turnId})=>item.type==='agentMessage'?[{id:item.id,turnId,role:'assistant',text:item.text,phase:item.phase}]:item.type==='userMessage'?[{id:item.id,turnId,role:'user',text:item.content.map(c=>c.type==='text'?userText(c.text):c.type==='mention'?'📎 '+c.name:c.type==='localImage'?'📎 '+basename(c.path):c.type==='image'?'📎 图片':'').filter(Boolean).join('\n')}]:[]).reverse();
-   let questions=[],questionError=null;try{questions=await ipc.questions(id);}catch(e){questionError=e.message;}
-   return json(200,{messages,nextCursor:r.nextCursor,questions,questionError});
+   const messages=r.data.flatMap(({item,turnId})=>item.type==='agentMessage'?[{id:item.id,turnId,role:'assistant',text:item.text,phase:item.phase}]:item.type==='userMessage'?[{id:item.id,turnId,role:'user',clientId:item.clientId,text:item.content.map(c=>c.type==='text'?userText(c.text):c.type==='mention'?'📎 '+c.name:c.type==='localImage'?'📎 '+basename(c.path):c.type==='image'?'📎 图片':'').filter(Boolean).join('\n')}]:[]).reverse();
+   let questions=[],questionError=null,activity=null;try{const snapshot=await ipc.snapshot(id);questions=pendingQuestions(snapshot);activity=conversationActivity(snapshot);}catch(e){questionError=e.message;}
+   return json(200,{messages,nextCursor:r.nextCursor,questions,questionError,activity,sentClientIds:sendReceipts.forThread(id)});
   }
   if(u.pathname==='/api/limits'){const r=await reader.rpc('account/rateLimits/read');return json(200,{rateLimits:r.rateLimits,rateLimitsByLimitId:r.rateLimitsByLimitId});}
   if(u.pathname==='/api/models'){const {data}=await reader.rpc('model/list',{limit:100});return json(200,{models:data.filter(m=>!m.hidden).map(m=>({id:m.model,name:m.displayName,description:m.description,isDefault:m.isDefault,defaultEffort:m.defaultReasoningEffort,efforts:m.supportedReasoningEfforts}))});}
