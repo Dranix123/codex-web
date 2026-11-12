@@ -61,3 +61,5 @@ main{display:flex;flex:1;min-height:0;height:auto;overflow:hidden}aside{width:10
 .message>small{display:block;font-size:10px;letter-spacing:.04em;margin-bottom:7px}
 
 #createStatus:empty,#projectStatus:empty,#pickerStatus:empty{display:none}
+
+.process-messages{margin:0 0 20px}.process-messages>summary{width:fit-content;max-width:100%;min-height:44px;padding:10px 2px;color:var(--muted);font-size:12px;line-height:24px;cursor:pointer;user-select:none}.process-messages>summary:focus-visible{outline:2px solid var(--muted);outline-offset:3px;border-radius:6px}.process-messages[open]>summary{margin-bottom:10px}.process-messages .message:last-child{margin-bottom:0}
