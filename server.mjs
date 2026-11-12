@@ -1,4 +1,5 @@
 import http from 'node:http';
+import {desktopUnreadIds,threadIndicator} from './thread-status.mjs';
 import {downloadFile} from './downloads.mjs';
 import {createPasswordGate} from './auth.mjs';
 import {readFile,writeFile,mkdir} from 'node:fs/promises';
@@ -14,6 +15,7 @@ const passwordGate=createPasswordGate(authConfig.passwordHash);
 const ipc=new DesktopIPC(),reader=new Reader();
 await reader.connect();let ipcError=null;try{await ipc.connect();}catch(e){ipcError=e.message;}
 const csrf=randomBytes(24).toString('hex');
+setInterval(()=>{if(ipc.watchedThreads.size&&Date.now()>ipc.sidebarWatchUntil)ipc.watchThreads([]);},15000).unref();
 const state=async()=>JSON.parse(await readFile(`${homedir()}/.codex/.codex-global-state.json`,'utf8'));
 const createdPath=new URL('./.local/threads.json',import.meta.url);
 let createdIds=JSON.parse(await readFile(createdPath,'utf8').catch(e=>{if(e.code==='ENOENT')return '[]';throw e;}));
@@ -48,6 +50,11 @@ const server=http.createServer(async(req,res)=>{
    }
    if(req.headers['content-type']!=='application/json')return json(415,{error:'需要 JSON'});
    let raw='';for await(const chunk of req){raw+=chunk;if(Buffer.byteLength(raw)>65536)return json(413,{error:'消息过长'});}const b=JSON.parse(raw);
+   if(u.pathname==='/api/thread-statuses'){
+    if(!Array.isArray(b.ids)||b.ids.some(id=>typeof id!=='string'||!/^[a-zA-Z0-9-]{10,80}$/.test(id)))return json(400,{error:'无效对话列表'});
+    ipc.watchThreads(b.ids);const unread=desktopUnreadIds(await state(),ipc.readContext);
+    return json(200,{states:b.ids.map(id=>({id,indicator:threadIndicator(ipc.sidebarStates.get(id),unread?.has(id))}))});
+   }
    if(u.pathname==='/api/files/browse'){
     try{return json(200,await browseDirectory(b.path||homedir(),b.foldersOnly===true));}catch(e){return json(400,{error:'无法打开文件夹：'+e.message});}
    }

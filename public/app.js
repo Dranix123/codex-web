@@ -1,5 +1,5 @@
 const $=id=>document.getElementById(id);
-const drafts=new Map(),attachmentDrafts=new Map(),expandedProcesses=new Set(),messageLoads=new Set();
+const drafts=new Map(),attachmentDrafts=new Map(),expandedProcesses=new Set(),messageLoads=new Set(),threadIndicators=new Map();
 let projectCatalog=[],selectedAttachments=[];
 let token='',allThreads=[],threadCursor=null,selected='',olderCursor=null,polling=false;
 async function api(path,body){
@@ -14,8 +14,23 @@ async function api(path,body){
  if(!r.ok){if(x.error?.includes('no-client-found'))throw Object.assign(Error('桌面对话尚未连接，请在桌面打开后重试'),{kind:'connection'});throw Error(x.error||'请求失败（HTTP '+r.status+'）');}return x;
 }
 function error(e){if(e.kind==='connection')$('notice').dataset.kind='connection';else delete $('notice').dataset.kind;$('notice').textContent=e.message;$('notice').className='error';}
-function renderThreads(){const project=$('project').value,q=$('search').value.toLowerCase();$('threads').replaceChildren();for(const t of allThreads.filter(t=>(!project||t.projectId===project)&&t.title.toLowerCase().includes(q))){const b=document.createElement('button'),title=document.createElement('span');title.className='thread-title';title.textContent=t.title.slice(0,70);b.append(title);b.className=t.id===selected?'active':'';b.setAttribute('aria-current',t.id===selected?'true':'false');b.onclick=()=>select(t);$('threads').append(b);}if(!$('threads').childElementCount){const p=document.createElement('p');p.className='no-threads';p.textContent='没有匹配的对话';$('threads').append(p);}}
-async function threads(append=false){const r=await api('/api/threads'+(append&&threadCursor?'?cursor='+encodeURIComponent(threadCursor):''));allThreads=append?[...allThreads,...r.data]:r.data;threadCursor=r.nextCursor;$('moreThreads').hidden=!threadCursor;renderThreads();}
+function renderThreads(){const project=$('project').value,q=$('search').value.toLowerCase();$('threads').replaceChildren();for(const t of allThreads.filter(t=>(!project||t.projectId===project)&&t.title.toLowerCase().includes(q))){const b=document.createElement('button'),title=document.createElement('span');title.className='thread-title';title.textContent=t.title.slice(0,70);const indicator=document.createElement('span');indicator.className='thread-indicator';indicator.setAttribute('role','img');indicator.hidden=true;b.dataset.threadId=t.id;b.append(title,indicator);b.className=t.id===selected?'active':'';b.setAttribute('aria-current',t.id===selected?'true':'false');b.onclick=()=>select(t);$('threads').append(b);}if(!$('threads').childElementCount){const p=document.createElement('p');p.className='no-threads';p.textContent='没有匹配的对话';$('threads').append(p);}updateThreadIndicators();}
+async function threads(append=false){const r=await api('/api/threads'+(append&&threadCursor?'?cursor='+encodeURIComponent(threadCursor):''));allThreads=append?[...allThreads,...r.data]:r.data;threadCursor=r.nextCursor;$('moreThreads').hidden=!threadCursor;renderThreads();refreshThreadIndicators();}
+function updateThreadIndicators(){
+ for(const button of $('threads').querySelectorAll('button[data-thread-id]')){
+  const state=threadIndicators.get(button.dataset.threadId),marker=button.querySelector('.thread-indicator');
+  marker.hidden=!state;marker.className='thread-indicator'+(state?' '+state:'');
+  marker.setAttribute('aria-label',state==='running'?'正在运行':'未读更新');
+ }
+}
+let threadStatusPending=false;
+async function refreshThreadIndicators(){
+ if(threadStatusPending||!allThreads.length)return;threadStatusPending=true;
+ try{const r=await api('/api/thread-statuses',{ids:allThreads.map(t=>t.id)});threadIndicators.clear();for(const s of r.states)if(s.indicator)threadIndicators.set(s.id,s.indicator);}
+ catch{threadIndicators.clear();}
+ finally{threadStatusPending=false;updateThreadIndicators();}
+}
+setInterval(()=>{if(!document.hidden)refreshThreadIndicators();},3000);
 function renderMessages(messages,prepend=false){
  const box=$('messages'),height=box.scrollHeight,nearBottom=box.scrollHeight-box.scrollTop-box.clientHeight<90;
  const finalIndexes=new Map();messages.forEach((m,index)=>{if(m.turnId&&m.role==='assistant'&&m.phase==='final_answer')finalIndexes.set(m.turnId,index);});

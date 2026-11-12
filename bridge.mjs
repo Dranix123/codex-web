@@ -1,4 +1,5 @@
 import net from 'node:net';
+import {applyThreadStatusChange} from './thread-status.mjs';
 import {mkdir,rmdir} from 'node:fs/promises';
 import {join} from 'node:path';
 import {attachmentInput} from './local-files.mjs';
@@ -8,20 +9,44 @@ import {createInterface} from 'node:readline';
 import {homedir} from 'node:os';
 export class DesktopIPC {
   snapshots=new Map(); snapshotReads=new Map();
+  watchedThreads=new Set(); sidebarStates=new Map(); sidebarOwners=new Map(); readContext=null; sidebarWatchUntil=0;
   pending=new Map(); buffer=Buffer.alloc(0); clientId='initializing-client';
   async connect(){
     this.socket=net.createConnection(`${homedir()}/.codex/ipc/ipc.sock`);
     this.socket.on('data',b=>{this.buffer=Buffer.concat([this.buffer,b]);while(this.buffer.length>=4){const n=this.buffer.readUInt32LE();if(n>268435456){this.socket.destroy();return;}if(this.buffer.length<n+4)break;const m=JSON.parse(this.buffer.subarray(4,n+4));this.buffer=this.buffer.subarray(n+4);this.receive(m);}});
     this.socket.on('error',()=>{});
-    this.socket.on('close',()=>{for(const p of this.pending.values())p.reject(Error('桌面 IPC 已断开，请重启网页服务'));this.pending.clear();});
+    this.socket.on('close',()=>{for(const p of this.pending.values())p.reject(Error('桌面 IPC 已断开，请重启网页服务'));this.pending.clear();this.sidebarStates.clear();this.sidebarOwners.clear();this.watchedThreads.clear();});
     await new Promise((resolve,reject)=>{this.socket.once('connect',resolve);this.socket.once('error',reject);});
     const r=await this.request('initialize',{clientType:'codexweb'});this.clientId=r.result.clientId;
   }
   write(m){const b=Buffer.from(JSON.stringify(m)),h=Buffer.alloc(4);h.writeUInt32LE(b.length);this.socket.write(Buffer.concat([h,b]));}
-  receive(m){if(m.type==='broadcast'&&m.method==='thread-stream-state-changed'&&m.params?.hostId==='local'&&m.params.change?.type==='snapshot')this.snapshots.get(m.params.conversationId)?.(m.params.change.conversationState);if(m.type==='client-discovery-request')this.write({type:'client-discovery-response',requestId:m.requestId,response:{canHandle:false}});if(m.type==='response'){const p=this.pending.get(m.requestId);if(p){this.pending.delete(m.requestId);m.resultType==='success'?p.resolve(m):p.reject(Error(m.error));}}}
+  receive(m){
+    if(m.type==='broadcast'&&m.method==='client-status-changed'&&m.params?.status==='disconnected'){
+      for(const [id,owner]of this.sidebarOwners)if(owner===m.params.clientId){this.sidebarStates.delete(id);this.sidebarOwners.delete(id);}
+    }
+    if(m.type==='broadcast'&&m.params?.hostId==='local'){
+      const id=m.params.conversationId;
+      if(m.method==='thread-read-state-changed'&&m.version===3){
+        if(m.params.context)this.readContext=m.params.context;
+        const current=this.sidebarStates.get(id)||{};this.sidebarStates.set(id,{...current,hasUnreadTurn:m.params.hasUnreadTurn});
+      }
+      if(m.method==='thread-stream-following-status-requested'&&this.watchedThreads.has(id))this.following(id,true);
+      if(m.method==='thread-stream-state-changed'&&m.version===11&&this.watchedThreads.has(id)){
+        const change=m.params.change,state=change.type==='snapshot'||this.sidebarOwners.get(id)===m.sourceClientId?applyThreadStatusChange(this.sidebarStates.get(id),change):null;
+        if(state){this.sidebarStates.set(id,state);this.sidebarOwners.set(id,m.sourceClientId);}else this.following(id,true);
+      }
+    }
+    if(m.type==='broadcast'&&m.method==='thread-stream-state-changed'&&m.params?.hostId==='local'&&m.params.change?.type==='snapshot')this.snapshots.get(m.params.conversationId)?.(m.params.change.conversationState);if(m.type==='client-discovery-request')this.write({type:'client-discovery-response',requestId:m.requestId,response:{canHandle:false}});if(m.type==='response'){const p=this.pending.get(m.requestId);if(p){this.pending.delete(m.requestId);m.resultType==='success'?p.resolve(m):p.reject(Error(m.error));}}}
   request(method,params,version=0){return new Promise((resolve,reject)=>{const requestId=randomUUID(),timer=setTimeout(()=>{this.pending.delete(requestId);reject(Error('桌面请求超时，发送结果可能未知；请查看历史后再重试'));},20000);this.pending.set(requestId,{resolve:v=>{clearTimeout(timer);resolve(v);},reject:e=>{clearTimeout(timer);reject(e);}});this.write({type:'request',requestId,sourceClientId:this.clientId,method,params,version,timeoutMs:18000});});}
   async owner(id){return this.request('thread-owner-discovery',{hostId:'local',conversationId:id},1);}
   following(id,following){this.write({type:'broadcast',method:'thread-stream-following-changed',sourceClientId:this.clientId,version:1,params:{conversationId:id,hostId:'local',following}});}
+  watchThreads(ids){
+    this.sidebarWatchUntil=Date.now()+30000;
+    const next=new Set(ids);
+    for(const id of this.watchedThreads)if(!next.has(id)){if(!this.snapshotReads.has(id))this.following(id,false);this.sidebarStates.delete(id);this.sidebarOwners.delete(id);}
+    for(const id of next)if(!this.watchedThreads.has(id))this.following(id,true);
+    this.watchedThreads=next;
+  }
   snapshot(id){
     if(this.snapshotReads.has(id))return this.snapshotReads.get(id);
     const read=(async()=>{
@@ -30,7 +55,7 @@ export class DesktopIPC {
         const timer=setTimeout(()=>reject(Error('桌面问题状态同步超时')),5000);
         this.snapshots.set(id,state=>{clearTimeout(timer);resolve(state);});
         this.following(id,true);
-      });}finally{this.snapshots.delete(id);this.following(id,false);}
+      });}finally{this.snapshots.delete(id);if(!this.watchedThreads.has(id))this.following(id,false);}
     })().finally(()=>this.snapshotReads.delete(id));
     this.snapshotReads.set(id,read);return read;
   }
