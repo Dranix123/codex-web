@@ -9,7 +9,7 @@ import {promisify} from 'node:util';
 import {randomBytes} from 'node:crypto';
 import {basename} from 'node:path';
 import {browseDirectory,resolveDirectory,resolveAttachments,saveUpload,MAX_UPLOAD_BYTES} from './local-files.mjs';
-import {DesktopIPC,Reader,pendingQuestions,conversationActivity} from './bridge.mjs';
+import {DesktopIPC,Reader,pendingQuestions,conversationActivity,editableMessage} from './bridge.mjs';
 import {SendReceipts} from './send-receipts.mjs';
 const authConfig=await readFile(new URL('./.local/auth.json',import.meta.url),'utf8').then(JSON.parse).catch(e=>{if(e.code==='ENOENT')return {};throw e;});
 const passwordGate=createPasswordGate(authConfig.passwordHash);
@@ -89,6 +89,7 @@ const server=http.createServer(async(req,res)=>{
    if(u.pathname==='/api/open'){await openThread(b.id);return json(200,{ok:true});}
    if(u.pathname==='/api/stop'){if(typeof b.turnId!=='string'||!b.turnId)return json(400,{error:'缺少当前轮次'});return json(200,await ipc.stop(b.id,b.turnId));}
    if(u.pathname==='/api/questions/answer'){await ipc.answer(b.id,b.requestId,b.answers);return json(200,{ok:true});}
+   if(u.pathname==='/api/edit'){if(typeof b.text!=='string'||!b.text.trim()||typeof b.expectedText!=='string'||typeof b.turnId!=='string'||!/^[a-f0-9-]{36}$/.test(b.clientMessageId||''))return json(400,{error:'无效消息编辑'});await sendReceipts.send(b.clientMessageId,b.id,()=>ipc.editLastMessage(b.id,b.turnId,b.expectedText,b.text,b.clientMessageId));return json(200,{ok:true});}
    if(u.pathname==='/api/send'){if(typeof b.text!=='string')return json(400,{error:'无效消息'});let files;try{files=await resolveAttachments(b.files);}catch(e){return json(400,{error:e.message});}if(!b.text.trim()&&!files.length)return json(400,{error:'请输入消息或附加文件'});if(ipcError)throw Error(ipcError);if(b.clientMessageId!=null&&!/^[a-f0-9-]{36}$/.test(b.clientMessageId))return json(400,{error:'无效消息标识'});await sendReceipts.send(b.clientMessageId,b.id,()=>ipc.send(b.id,b.text,files,b.clientMessageId));return json(200,{ok:true});}
    return json(404,{error:'未找到'});
   }
@@ -105,8 +106,8 @@ const server=http.createServer(async(req,res)=>{
   if(u.pathname==='/api/messages'){
    const id=u.searchParams.get('id');const r=await reader.rpc('thread/items/list',{threadId:id,limit:100,sortDirection:'desc',cursor:u.searchParams.get('cursor')||null});
    const messages=r.data.flatMap(({item,turnId})=>item.type==='agentMessage'?[{id:item.id,turnId,role:'assistant',text:item.text,phase:item.phase}]:item.type==='userMessage'?[{id:item.id,turnId,role:'user',clientId:item.clientId,text:item.content.map(c=>c.type==='text'?userText(c.text):c.type==='mention'?'📎 '+c.name:c.type==='localImage'?'📎 '+basename(c.path):c.type==='image'?'📎 图片':'').filter(Boolean).join('\n')}]:[]).reverse();
-   let questions=[],questionError=null,activity=null;try{const snapshot=await ipc.snapshot(id);questions=pendingQuestions(snapshot);activity=conversationActivity(snapshot);}catch(e){questionError=e.message;}
-   return json(200,{messages,nextCursor:r.nextCursor,questions,questionError,activity,sentClientIds:sendReceipts.forThread(id)});
+   let questions=[],questionError=null,activity=null,editable=null;try{const snapshot=await ipc.snapshot(id);questions=pendingQuestions(snapshot);activity=conversationActivity(snapshot);editable=editableMessage(snapshot);}catch(e){questionError=e.message;}
+   return json(200,{messages,nextCursor:r.nextCursor,questions,questionError,activity,editable,sentClientIds:sendReceipts.forThread(id)});
   }
   if(u.pathname==='/api/limits'){const r=await reader.rpc('account/rateLimits/read');return json(200,{rateLimits:r.rateLimits,rateLimitsByLimitId:r.rateLimitsByLimitId});}
   if(u.pathname==='/api/models'){const {data}=await reader.rpc('model/list',{limit:100});return json(200,{models:data.filter(m=>!m.hidden).map(m=>({id:m.model,name:m.displayName,description:m.description,isDefault:m.isDefault,defaultEffort:m.defaultReasoningEffort,efforts:m.supportedReasoningEfforts}))});}

@@ -85,12 +85,22 @@ export class DesktopIPC {
     const r=await this.request('thread-follower-interrupt-turn',{conversationId:id,mode:'user-stop',expectedTurnId},4);
     return {stopped:Boolean(r.result.interruptedTurnId)};
   }
+  async editLastMessage(id,turnId,expectedText,text,clientMessageId){
+    const editable=editableMessage(await this.snapshot(id));
+    if(!editable||editable.turnId!==turnId||editable.text!==expectedText)throw Error('这条消息已变化或当前无法编辑，请刷新对话');
+    return this.request('thread-follower-edit-last-user-turn',{conversationId:id,turnId,message:text,clientUserMessageId:clientMessageId,allowEarlierMessages:false,shouldSendPermissionOverrides:false},2);
+  }
   async modelSettings(id){
     const settings=(await this.request('thread-follower-read-model-settings',{conversationId:id},1)).result.settings;
     const state=await this.snapshot(id);return inheritedModelSettings(settings,state);
   }
   async setModel(id,model,effort){return (await this.request('thread-follower-update-thread-settings',{conversationId:id,threadSettings:{model,effort}},2)).result;}
-  async send(id,text,files=[],clientMessageId){const state=await this.snapshot(id);if(pendingQuestions(state).some(q=>q.isBlocking))throw Error('请先在问题区域提交答案');return this.request('thread-follower-start-turn',{conversationId:id,turnStart:{request:{threadId:id,...inheritedTurnSettings(state),...clientMessageId?{clientUserMessageId:clientMessageId}:{},input:[...(text.trim()?[{type:'text',text,text_elements:[]}]:[]),...attachmentInput(files)]},context:{inheritThreadSettings:true}}},2);}
+  async send(id,text,files=[],clientMessageId){
+    const state=await this.snapshot(id);if(pendingQuestions(state).some(q=>q.isBlocking))throw Error('请先在问题区域提交答案');
+    const input=[...(text.trim()?[{type:'text',text,text_elements:[]}]:[]),...attachmentInput(files)];
+    if(conversationActivity(state).turnId)return this.request('thread-follower-steer-turn',{conversationId:id,clientUserMessageId:clientMessageId,input,restoreMessage:{id:clientMessageId||randomUUID(),content:text,context:{workspaceRoots:state.cwd?[state.cwd]:[],collaborationMode:state.latestCollaborationMode},cwd:state.cwd}},1);
+    return this.request('thread-follower-start-turn',{conversationId:id,turnStart:{request:{threadId:id,...inheritedTurnSettings(state),...clientMessageId?{clientUserMessageId:clientMessageId}:{},input},context:{inheritThreadSettings:true}}},2);
+  }
 }
 export class Reader {
   pending=new Map(); sequence=0;
@@ -176,4 +186,16 @@ export function conversationActivity(state){
  const turns=history?(history.islands||[]).flatMap(island=>island.entries.map(e=>history.entitiesByKey[e.value])).filter(Boolean):state.turns||[];
  const latest=turns.findLast(t=>t.turnId!=null);
  return {running:state.threadRuntimeStatus?.type==='active'||latest?.status==='inProgress',turnId:latest?.status==='inProgress'?latest.turnId:null};
+}
+
+export function editableMessage(state){
+ if(conversationActivity(state).running||pendingQuestions(state).some(q=>q.isBlocking))return null;
+ const history=state.turnHistory?.kind==='canonical'?state.turnHistory.history:null;
+ const turns=history?(history.islands||[]).flatMap(island=>island.entries.map(e=>history.entitiesByKey[e.value])).filter(Boolean):state.turns||[];
+ const turn=turns.findLast(t=>t.params?.input?.length);
+ if(!turn?.turnId)return null;
+ const text=turn.params.input.filter(c=>c.type==='text');
+ if(text.length!==1||!text[0].text.trim()||text[0].text.includes('<send_user_message_question_reply>'))return null;
+ if(turn.items?.some(i=>i.type==='steeringUserMessage'||i.type==='userMessage'&&(i.content||[]).filter(c=>c.type==='text').map(c=>c.text).join('\n')!==text[0].text))return null;
+ return {turnId:turn.turnId,text:text[0].text};
 }
