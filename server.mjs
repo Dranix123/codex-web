@@ -9,7 +9,7 @@ import {promisify} from 'node:util';
 import {randomBytes} from 'node:crypto';
 import {basename} from 'node:path';
 import {browseDirectory,resolveDirectory,resolveAttachments,saveUpload,MAX_UPLOAD_BYTES} from './local-files.mjs';
-import {DesktopIPC,Reader,pendingQuestions,conversationActivity,editableMessage} from './bridge.mjs';
+import {DesktopIPC,Reader,pendingQuestions,conversationActivity,conversationWork,editableMessage} from './bridge.mjs';
 import {SendReceipts} from './send-receipts.mjs';
 const authConfig=await readFile(new URL('./.local/auth.json',import.meta.url),'utf8').then(JSON.parse).catch(e=>{if(e.code==='ENOENT')return {};throw e;});
 const passwordGate=createPasswordGate(authConfig.passwordHash);
@@ -106,8 +106,9 @@ const server=http.createServer(async(req,res)=>{
   if(u.pathname==='/api/messages'){
    const id=u.searchParams.get('id');const r=await reader.rpc('thread/items/list',{threadId:id,limit:100,sortDirection:'desc',cursor:u.searchParams.get('cursor')||null});
    const messages=r.data.flatMap(({item,turnId})=>item.type==='agentMessage'?[{id:item.id,turnId,role:'assistant',text:item.text,phase:item.phase}]:item.type==='userMessage'?[{id:item.id,turnId,role:'user',clientId:item.clientId,text:item.content.map(c=>c.type==='text'?userText(c.text):c.type==='mention'?'📎 '+c.name:c.type==='localImage'?'📎 '+basename(c.path):c.type==='image'?'📎 图片':'').filter(Boolean).join('\n')}]:[]).reverse();
-   let questions=[],questionError=null,activity=null,editable=null;try{const snapshot=await ipc.snapshot(id);questions=pendingQuestions(snapshot);activity=conversationActivity(snapshot);editable=editableMessage(snapshot);}catch(e){questionError=e.message;}
-   return json(200,{messages,nextCursor:r.nextCursor,questions,questionError,activity,editable,sentClientIds:sendReceipts.forThread(id)});
+   let questions=[],questionError=null,activity=null,editable=null,goal,work;try{const snapshot=await ipc.snapshot(id);questions=pendingQuestions(snapshot);activity=conversationActivity(snapshot);work={turns:conversationWork(snapshot),observedAtMs:Date.now()};editable=editableMessage(snapshot);goal=snapshot.threadGoal??null;}catch(e){questionError=e.message;}
+   if(questionError)try{({goal}=await reader.rpc('thread/goal/get',{threadId:id}));}catch{}
+   return json(200,{messages,nextCursor:r.nextCursor,questions,questionError,activity,editable,goal,work,sentClientIds:sendReceipts.forThread(id)});
   }
   if(u.pathname==='/api/limits'){const r=await reader.rpc('account/rateLimits/read');return json(200,{rateLimits:r.rateLimits,rateLimitsByLimitId:r.rateLimitsByLimitId});}
   if(u.pathname==='/api/models'){const {data}=await reader.rpc('model/list',{limit:100});return json(200,{models:data.filter(m=>!m.hidden).map(m=>({id:m.model,name:m.displayName,description:m.description,isDefault:m.isDefault,defaultEffort:m.defaultReasoningEffort,efforts:m.supportedReasoningEfforts}))});}

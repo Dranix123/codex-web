@@ -1,6 +1,6 @@
 const $=id=>document.getElementById(id);
 const drafts=new Map(),attachmentDrafts=new Map(),expandedProcesses=new Set(),messageLoads=new Set(),threadIndicators=new Map(),pendingSends=new Map(),sendingThreads=new Set(),stoppingThreads=new Set(),threadRuns=new Map();
-let projectCatalog=[],selectedAttachments=[],renderedMessagesKey='',editable=null,editing=null;
+let projectCatalog=[],selectedAttachments=[],renderedMessagesKey='',editable=null,editing=null,currentGoal=null,workTurns=[],workClockOffset=0;
 let token='',allThreads=[],threadCursor=null,selected='',olderCursor=null,polling=false;
 async function api(path,body,attempt=0){
  const r=await fetch(path,body?{method:'POST',headers:{'Content-Type':'application/json','X-Codexweb-Token':token},body:JSON.stringify(body)}:{});
@@ -32,7 +32,7 @@ async function refreshThreadIndicators(){
 }
 setInterval(()=>{if(!document.hidden)refreshThreadIndicators();},3000);
 function renderMessages(messages,prepend=false){
- const key=JSON.stringify([selected,messages,editable]);if(!prepend&&key===renderedMessagesKey)return;renderedMessagesKey=key;
+ const key=JSON.stringify([selected,messages,editable,workTurns]);if(!prepend&&key===renderedMessagesKey)return;renderedMessagesKey=key;
  const editor=$('editMessageForm');if(editor?.closest('#messages'))$('editMessageDock').append(editor);
  const box=$('messages'),height=box.scrollHeight,nearBottom=box.scrollHeight-box.scrollTop-box.clientHeight<90;
  const finalIndexes=new Map();messages.forEach((m,index)=>{if(m.turnId&&m.role==='assistant'&&m.phase==='final_answer')finalIndexes.set(m.turnId,index);});
@@ -42,10 +42,12 @@ function renderMessages(messages,prepend=false){
   if(m.role==='user'&&editing?.id===selected&&editing.turnId===m.turnId&&m===messages.findLast(item=>item.role==='user')){a.classList.add('is-editing');a.append(editor);return a;}
   if(m.role==='user'){const p=document.createElement('p');p.textContent=m.text;a.append(p);if(editable?.turnId===m.turnId&&m===messages.findLast(item=>item.role==='user')){const edit=document.createElement('button');edit.type='button';edit.className='edit-message';edit.setAttribute('aria-label','编辑消息');edit.title='编辑消息';edit.textContent='✎';edit.onclick=()=>openMessageEditor();a.append(edit);}}else a.append(renderMarkdown(m.text));return a;
  };
- const nodes=[];
+ const nodes=[],shownWork=new Set();
+ const addWork=turnId=>{const work=workTurns.find(w=>w.turnId===turnId);if(!work||shownWork.has(turnId))return;shownWork.add(turnId);const node=document.createElement('div');node.className='work-status';node.dataset.turnId=turnId;nodes.push(node);};
  for(let index=0;index<messages.length;){
   const m=messages[index],canFold=item=>item.role==='assistant'&&item.phase==='commentary'&&item.turnId===m.turnId&&index<finalIndexes.get(m.turnId);
-  if(!canFold(m)){nodes.push(messageNode(m));index++;continue;}
+  if(m.role==='assistant'&&m.phase==='final_answer'&&workTurns.find(w=>w.turnId===m.turnId)?.status!=='working')addWork(m.turnId);
+  if(!canFold(m)){nodes.push(messageNode(m));index++;if(index===messages.length||messages[index].turnId!==m.turnId)addWork(m.turnId);continue;}
   const details=document.createElement('details'),summary=document.createElement('summary'),group=[];
   const key=JSON.stringify([selected,m.turnId,m.id]);
   while(index<messages.length&&canFold(messages[index]))group.push(messages[index++]);
@@ -54,10 +56,12 @@ function renderMessages(messages,prepend=false){
   details.addEventListener('toggle',()=>{if(!details.isConnected)return;if(details.open)expandedProcesses.add(key);else expandedProcesses.delete(key);label();});
   details.append(summary,...group.map(messageNode));nodes.push(details);
  }
+ for(const work of workTurns)if(work.status==='working')addWork(work.turnId);
  if(!nodes.length){const empty=document.createElement('div');empty.className='empty';empty.textContent='开始一段新对话';nodes.push(empty);}
  if(prepend){box.prepend(...nodes);box.scrollTop=box.scrollHeight-height;}else{box.replaceChildren(...nodes);if(nearBottom)box.scrollTop=box.scrollHeight;}
+ updateWorkTime();
 }
-async function messages(older=false){const id=selected;if(!id||messageLoads.has(id))return;messageLoads.add(id);try{const r=await api('/api/messages?id='+encodeURIComponent(id)+(older&&olderCursor?'&cursor='+encodeURIComponent(olderCursor):''));if(selected!==id)return;if(older){hasOlderLoaded=true;history=[...r.messages,...history];}else {const ids=new Set(r.messages.map(m=>m.id));const first=history.findIndex(m=>ids.has(m.id));history=hasOlderLoaded&&first>=0?[...history.slice(0,first),...r.messages]:r.messages;}if(older||!hasOlderLoaded)olderCursor=r.nextCursor;$('older').hidden=!olderCursor;editable=r.editable??null;renderMessages(history);if(r.activity)threadRuns.set(id,r.activity);const pending=pendingSends.get(id);if(pending&&(r.sentClientIds?.includes(pending.clientMessageId)||history.some(m=>m.role==='user'&&m.clientId===pending.clientMessageId)))confirmSend(id,pending.clientMessageId);if($('notice').dataset.kind==='history'){$('notice').textContent='';delete $('notice').dataset.kind;}if(r.activity&&!r.activity.running&&$('notice').dataset.kind==='stop'){$('notice').textContent='';delete $('notice').dataset.kind;}showQuestions(r.questions||[]);syncDesktopConnection(r.questionError);}catch(e){if(selected===id)throw Object.assign(e,{kind:'history'});}finally{messageLoads.delete(id);}}
+async function messages(older=false){const id=selected;if(!id||messageLoads.has(id))return;messageLoads.add(id);try{const r=await api('/api/messages?id='+encodeURIComponent(id)+(older&&olderCursor?'&cursor='+encodeURIComponent(olderCursor):''));if(selected!==id)return;if(older){hasOlderLoaded=true;history=[...r.messages,...history];}else {const ids=new Set(r.messages.map(m=>m.id));const first=history.findIndex(m=>ids.has(m.id));history=hasOlderLoaded&&first>=0?[...history.slice(0,first),...r.messages]:r.messages;}if(older||!hasOlderLoaded)olderCursor=r.nextCursor;$('older').hidden=!olderCursor;editable=r.editable??null;if(Object.hasOwn(r,'goal'))showGoal(r.goal);if(r.work){workTurns=r.work.turns;workClockOffset=r.work.observedAtMs-Date.now();}renderMessages(history);if(r.activity)threadRuns.set(id,r.activity);const pending=pendingSends.get(id);if(pending&&(r.sentClientIds?.includes(pending.clientMessageId)||history.some(m=>m.role==='user'&&m.clientId===pending.clientMessageId)))confirmSend(id,pending.clientMessageId);if($('notice').dataset.kind==='history'){$('notice').textContent='';delete $('notice').dataset.kind;}if(r.activity&&!r.activity.running&&$('notice').dataset.kind==='stop'){$('notice').textContent='';delete $('notice').dataset.kind;}showQuestions(r.questions||[]);syncDesktopConnection(r.questionError);}catch(e){if(selected===id)throw Object.assign(e,{kind:'history'});}finally{messageLoads.delete(id);}}
 let questionKey='',blockingQuestion=false,desktopConnected=false,desktopConnectionAttempt=null;
 function syncDesktopConnection(syncError){
  const connected=!syncError,wasConnected=desktopConnected;desktopConnected=connected;
@@ -116,7 +120,7 @@ async function select(t){
  const attempt={id:t.id};desktopConnectionAttempt=attempt;
  document.body.dataset.view='chat';$('messages').replaceChildren();renderedMessagesKey='';
  if(selected){drafts.set(selected,$('text').value);attachmentDrafts.set(selected,[...selectedAttachments]);}
- selected=t.id;editable=null;$('sendStatus').textContent=pendingSends.has(selected)?'正在核对发送结果…':'';desktopConnected=false;questionKey='';$('questions').hidden=true;$('questions').replaceChildren();
+ selected=t.id;editable=null;workTurns=[];workClockOffset=0;showGoal(null);$('sendStatus').textContent=pendingSends.has(selected)?'正在核对发送结果…':'';desktopConnected=false;questionKey='';$('questions').hidden=true;$('questions').replaceChildren();
  selectedAttachments=[...(attachmentDrafts.get(selected)||[])];renderAttachments();$('attach').disabled=false;$('downloadFiles').disabled=false;
  hasOlderLoaded=false;$('text').value=drafts.get(selected)||'';history=[];blockingQuestion=true;
  $('title').textContent=t.title;$('open').disabled=false;$('text').disabled=true;$('send').disabled=true;$('model').disabled=true;$('effort').disabled=true;
@@ -226,6 +230,29 @@ $('editMessageForm').onsubmit=async e=>{
  catch(e){if(pendingSends.get(id)!==pending)return;if(!e.uncertain&&!(e instanceof TypeError)){pending.waiting=false;$('editMessageStatus').textContent=e.message;$('cancelEditMessage').disabled=false;$('saveEditMessage').disabled=false;$('editMessageText').disabled=false;if(selected===id)$('sendStatus').textContent='';}if(selected===id)await messages().catch(()=>{});}
  finally{sendingThreads.delete(id);if(selected===id)updateSendButton();}
 };
+function workLabel(work,now=Date.now()+workClockOffset){
+ const elapsed=work.startedAtMs==null?null:Math.max(0,(work.completedAtMs??now)-work.startedAtMs);
+ const prefix={working:'正在运行',worked:'已运行',stopped:'已停止',failed:'运行失败',unknown:'运行结束'}[work.status];
+ if(elapsed==null||work.completedAtMs==null&&work.status!=='working'||elapsed<1000)return prefix;
+ const seconds=Math.floor(elapsed/1000),minutes=Math.floor(seconds/60),hours=Math.floor(minutes/60);
+ return prefix+' '+(hours?hours+' 小时 ':'')+(minutes?minutes%60+' 分 ':'')+seconds%60+' 秒';
+}
+function updateWorkTime(){
+ for(const node of $('messages').querySelectorAll('.work-status')){
+  const work=workTurns.find(w=>w.turnId===node.dataset.turnId);if(!work)continue;
+  node.textContent=workLabel(work);node.classList.toggle('is-working',work.status==='working');
+ }
+}
+setInterval(updateWorkTime,1000);
+function showGoal(goal){
+ currentGoal=goal??null;$('goalBar').hidden=!currentGoal;if(!currentGoal)return;
+ $('goalState').textContent=({active:'正在追求目标',paused:'目标已暂停',blocked:'目标受阻',usageLimited:'目标额度受限',budgetLimited:'目标预算受限',complete:'目标已完成'})[goal.status]||'Goal';$('goalObjective').textContent=goal.objective;$('goalObjective').title=goal.objective;updateGoalTime();
+}
+function updateGoalTime(){
+ if(!currentGoal)return;const g=currentGoal,seconds=Math.max(0,Math.floor(g.timeUsedSeconds+(g.status==='active'?(Date.now()/1000-g.updatedAt):0)));
+ $('goalTime').textContent=(seconds>=3600?Math.floor(seconds/3600)+' 小时 ':'')+Math.floor(seconds%3600/60)+' 分 '+seconds%60+' 秒';
+}
+setInterval(updateGoalTime,1000);
 async function init(){const r=await api('/api/bootstrap');token=r.token;$('connection').textContent=r.ipcError?'桌面 IPC 不可用':'服务器已连接';$('notice').textContent='';for(const p of r.projects)addProject(p);await threads();limits();}
 init().catch(error);
 let modelCatalog=[];

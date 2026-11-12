@@ -116,7 +116,7 @@ export class Reader {
     this.process.stdin.write(JSON.stringify({method:'initialized'})+'\n');
   }
   fail(e){for(const p of this.pending.values())p.reject(e);this.pending.clear();}
-  rpc(method,params={}){if(!['initialize','project/list','thread/list','thread/read','thread/items/list','account/rateLimits/read','model/list'].includes(method))throw Error('只读客户端禁止此方法');return this.request(method,params);}
+  rpc(method,params={}){if(!['initialize','project/list','thread/list','thread/read','thread/items/list','thread/goal/get','account/rateLimits/read','model/list'].includes(method))throw Error('只读客户端禁止此方法');return this.request(method,params);}
   async listProjects(){const data=[];let cursor;do{const page=await this.rpc('project/list',{limit:100,cursor});data.push(...page.data);cursor=page.nextCursor;}while(cursor);return {data};}
   async createProject(name,path,idempotencyKey){return (await this.request('project/create',{name,roots:[{path}],idempotencyKey})).project;}
   async createThread(project,model,effort){
@@ -186,6 +186,19 @@ export function conversationActivity(state){
  const turns=history?(history.islands||[]).flatMap(island=>island.entries.map(e=>history.entitiesByKey[e.value])).filter(Boolean):state.turns||[];
  const latest=turns.findLast(t=>t.turnId!=null);
  return {running:state.threadRuntimeStatus?.type==='active'||latest?.status==='inProgress',turnId:latest?.status==='inProgress'?latest.turnId:null};
+}
+
+export function conversationWork(state){
+ const history=state.turnHistory?.kind==='canonical'?state.turnHistory.history:null;
+ const turns=history?(history.islands||[]).flatMap(island=>island.entries.map(e=>history.entitiesByKey[e.value])).filter(Boolean):state.turns||[];
+ return turns.filter(t=>t.turnId&&!t.items?.some(i=>i.type==='sleep')).map(t=>{
+  const startedAtMs=t.turnStartedAtMs??t.firstTurnWorkItemStartedAtMs??null;
+  const lastAssistant=t.items?.findLast(i=>i.type==='agentMessage');
+  const finalStarted=t.status!=='inProgress'||lastAssistant?.phase==='final_answer';
+  const completedAtMs=finalStarted?(t.finalAssistantStartedAtMs??(startedAtMs!=null&&t.durationMs!=null?startedAtMs+t.durationMs:null)):null;
+  const status=t.status==='interrupted'?'stopped':t.status==='failed'?'failed':completedAtMs!=null?'worked':t.status==='inProgress'?'working':'unknown';
+  return {turnId:t.turnId,status,startedAtMs,completedAtMs};
+ });
 }
 
 export function editableMessage(state){
