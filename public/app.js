@@ -1,5 +1,5 @@
 const $=id=>document.getElementById(id);
-const drafts=new Map(),attachmentDrafts=new Map(),expandedProcesses=new Set(),messageLoads=new Set(),threadIndicators=new Map(),pendingSends=new Map(),sendingThreads=new Set(),stoppingThreads=new Set(),threadRuns=new Map();
+const drafts=new Map(),attachmentDrafts=new Map(),expandedProcesses=new Map(),messageLoads=new Set(),threadIndicators=new Map(),pendingSends=new Map(),sendingThreads=new Set(),stoppingThreads=new Set(),threadRuns=new Map();
 let projectCatalog=[],selectedAttachments=[],renderedMessagesKey='',editable=null,editing=null,currentGoal=null,workTurns=[],workClockOffset=0;
 let token='',allThreads=[],threadCursor=null,selected='',olderCursor=null,polling=false;
 async function api(path,body,attempt=0){
@@ -38,22 +38,22 @@ function renderMessages(messages,prepend=false){
  const finalIndexes=new Map();messages.forEach((m,index)=>{if(m.turnId&&m.role==='assistant'&&m.phase==='final_answer')finalIndexes.set(m.turnId,index);});
  const messageNode=m=>{
   const a=document.createElement('article');a.className='message '+m.role;
-  if(m.role!=='user'){const role=document.createElement('small');role.textContent=m.phase==='commentary'?'CODEX · 过程':m.phase==='final_answer'?'CODEX · 最终回复':'CODEX · 回复';a.append(role);}
   if(m.role==='user'&&editing?.id===selected&&editing.turnId===m.turnId&&m===messages.findLast(item=>item.role==='user')){a.classList.add('is-editing');a.append(editor);return a;}
   if(m.role==='user'){const p=document.createElement('p');p.textContent=m.text;a.append(p);if(editable?.turnId===m.turnId&&m===messages.findLast(item=>item.role==='user')){const edit=document.createElement('button');edit.type='button';edit.className='edit-message';edit.setAttribute('aria-label','编辑消息');edit.title='编辑消息';edit.textContent='✎';edit.onclick=()=>openMessageEditor();a.append(edit);}}else a.append(renderMarkdown(m.text));return a;
  };
  const nodes=[],shownWork=new Set();
- const addWork=turnId=>{const work=workTurns.find(w=>w.turnId===turnId);if(!work||shownWork.has(turnId))return;shownWork.add(turnId);const node=document.createElement('div');node.className='work-status';node.dataset.turnId=turnId;nodes.push(node);};
+ const addWork=turnId=>{const work=workTurns.find(w=>w.turnId===turnId);if(!work||shownWork.has(turnId))return;shownWork.add(turnId);const node=document.createElement('div');node.className='work-status';node.dataset.turnId=turnId;const label=document.createElement('span');label.className='work-label';node.append(label);nodes.push(node);};
  for(let index=0;index<messages.length;){
-  const m=messages[index],canFold=item=>item.role==='assistant'&&item.phase==='commentary'&&item.turnId===m.turnId&&index<finalIndexes.get(m.turnId);
+  const m=messages[index],canFold=item=>item.role==='assistant'&&item.phase==='commentary'&&item.turnId===m.turnId;
   if(m.role==='assistant'&&m.phase==='final_answer'&&workTurns.find(w=>w.turnId===m.turnId)?.status!=='working')addWork(m.turnId);
   if(!canFold(m)){nodes.push(messageNode(m));index++;if(index===messages.length||messages[index].turnId!==m.turnId)addWork(m.turnId);continue;}
   const details=document.createElement('details'),summary=document.createElement('summary'),group=[];
-  const key=JSON.stringify([selected,m.turnId,m.id]);
+  const complete=finalIndexes.has(m.turnId),key=JSON.stringify([selected,m.turnId,m.id,complete]);
   while(index<messages.length&&canFold(messages[index]))group.push(messages[index++]);
-  details.className='process-messages';details.open=expandedProcesses.has(key);
-  const label=()=>{summary.textContent=(details.open?'收起过程':'展开过程')+'（'+group.length+'）';};label();
-  details.addEventListener('toggle',()=>{if(!details.isConnected)return;if(details.open)expandedProcesses.add(key);else expandedProcesses.delete(key);label();});
+  details.className='process-messages';details.open=expandedProcesses.get(key)??!complete;
+  summary.className='work-status';summary.dataset.turnId=m.turnId;
+  const label=document.createElement('span');label.className='work-label';label.textContent='过程';summary.append(label);shownWork.add(m.turnId);
+  details.addEventListener('toggle',()=>{if(!details.isConnected)return;expandedProcesses.set(key,details.open);});
   details.append(summary,...group.map(messageNode));nodes.push(details);
  }
  for(const work of workTurns)if(work.status==='working')addWork(work.turnId);
@@ -240,7 +240,7 @@ function workLabel(work,now=Date.now()+workClockOffset){
 function updateWorkTime(){
  for(const node of $('messages').querySelectorAll('.work-status')){
   const work=workTurns.find(w=>w.turnId===node.dataset.turnId);if(!work)continue;
-  node.textContent=workLabel(work);node.classList.toggle('is-working',work.status==='working');
+  node.querySelector('.work-label').textContent=workLabel(work);node.classList.toggle('is-working',work.status==='working');
  }
 }
 setInterval(updateWorkTime,1000);
