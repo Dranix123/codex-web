@@ -16,7 +16,7 @@ async function api(path,body){
 function error(e){$('notice').textContent=e.message;$('notice').className='error';}
 function renderThreads(){const project=$('project').value,q=$('search').value.toLowerCase();$('threads').replaceChildren();for(const t of allThreads.filter(t=>(!project||t.projectId===project)&&t.title.toLowerCase().includes(q))){const b=document.createElement('button'),title=document.createElement('span');title.className='thread-title';title.textContent=t.title.slice(0,70);b.append(title);b.className=t.id===selected?'active':'';b.setAttribute('aria-current',t.id===selected?'true':'false');b.onclick=()=>select(t);$('threads').append(b);}if(!$('threads').childElementCount){const p=document.createElement('p');p.className='no-threads';p.textContent='没有匹配的对话';$('threads').append(p);}}
 async function threads(append=false){const r=await api('/api/threads'+(append&&threadCursor?'?cursor='+encodeURIComponent(threadCursor):''));allThreads=append?[...allThreads,...r.data]:r.data;threadCursor=r.nextCursor;$('moreThreads').hidden=!threadCursor;renderThreads();}
-function renderMessages(messages,prepend=false){const box=$('messages'),height=box.scrollHeight,nearBottom=box.scrollHeight-box.scrollTop-box.clientHeight<90;const nodes=messages.map(m=>{const a=document.createElement('article');a.className='message '+m.role;const role=document.createElement('small');role.textContent=m.role==='user'?'你':m.phase==='commentary'?'CODEX · 过程':m.phase==='final_answer'?'CODEX · 最终回复':'CODEX · 回复';const p=document.createElement('p');p.textContent=m.text;a.append(role,p);return a;});if(!nodes.length){const empty=document.createElement('div');empty.className='empty';empty.textContent='开始一段新对话';nodes.push(empty);}if(prepend){box.prepend(...nodes);box.scrollTop=box.scrollHeight-height;}else{box.replaceChildren(...nodes);if(nearBottom)box.scrollTop=box.scrollHeight;}}
+function renderMessages(messages,prepend=false){const box=$('messages'),height=box.scrollHeight,nearBottom=box.scrollHeight-box.scrollTop-box.clientHeight<90;const nodes=messages.map(m=>{const a=document.createElement('article');a.className='message '+m.role;if(m.role!=='user'){const role=document.createElement('small');role.textContent=m.phase==='commentary'?'CODEX · 过程':m.phase==='final_answer'?'CODEX · 最终回复':'CODEX · 回复';a.append(role);}const p=document.createElement('p');p.textContent=m.text;a.append(p);return a;});if(!nodes.length){const empty=document.createElement('div');empty.className='empty';empty.textContent='开始一段新对话';nodes.push(empty);}if(prepend){box.prepend(...nodes);box.scrollTop=box.scrollHeight-height;}else{box.replaceChildren(...nodes);if(nearBottom)box.scrollTop=box.scrollHeight;}}
 async function messages(older=false){const id=selected;if(!id||loading)return;loading=true;try{const r=await api('/api/messages?id='+encodeURIComponent(id)+(older&&olderCursor?'&cursor='+encodeURIComponent(olderCursor):''));if(selected!==id)return;if(older){hasOlderLoaded=true;history=[...r.messages,...history];}else {const ids=new Set(r.messages.map(m=>m.id));const first=history.findIndex(m=>ids.has(m.id));history=hasOlderLoaded&&first>=0?[...history.slice(0,first),...r.messages]:r.messages;}if(older||!hasOlderLoaded)olderCursor=r.nextCursor;$('older').hidden=!olderCursor;renderMessages(history);showQuestions(r.questions||[],r.questionError);}finally{loading=false;}}
 let questionKey='',blockingQuestion=false;
 function showQuestions(requests,syncError){
@@ -90,7 +90,7 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden&&Date.now(
 $('project').onchange=renderThreads;$('search').oninput=renderThreads;$('moreThreads').onclick=()=>threads(true).catch(error);$('older').onclick=()=>messages(true).catch(error);$('refreshLimits').onclick=limits;
 $('open').onclick=async()=>{try{await api('/api/open',{id:selected});const thread=allThreads.find(t=>t.id===selected);if(thread)await select(thread);}catch(e){error(e);}};
 $('composer').onsubmit=async e=>{e.preventDefault();if(blockingQuestion)return;const text=$('text').value,id=selected,files=selectedAttachments.map(f=>f.path);if(!text.trim()&&!files.length)return;$('send').disabled=true;$('sendStatus').textContent='发送中…';try{await api('/api/send',{id,text,files});drafts.delete(id);const remaining=(attachmentDrafts.get(id)||[]).filter(f=>!files.includes(f.path));attachmentDrafts.set(id,remaining);if(selected===id){$('text').value='';selectedAttachments=selectedAttachments.filter(f=>!files.includes(f.path));renderAttachments();}$('sendStatus').textContent='';await messages();}catch(e){error(e);$('sendStatus').textContent='请先核对历史，避免重复发送';}finally{$('send').disabled=blockingQuestion;}};
-async function init(){const r=await api('/api/bootstrap');token=r.token;$('connection').textContent=r.ipcError?'桌面 IPC 不可用':'本机已连接';$('notice').textContent='';for(const p of r.projects)addProject(p);await threads();limits();}
+async function init(){const r=await api('/api/bootstrap');token=r.token;$('connection').textContent=r.ipcError?'桌面 IPC 不可用':'服务器已连接';$('notice').textContent='';for(const p of r.projects)addProject(p);await threads();limits();}
 init().catch(error);
 let modelCatalog=[];
 const effortLabels={none:'无',minimal:'最低',low:'低',medium:'中',high:'高',xhigh:'极高',max:'最大',ultra:'Ultra'};
@@ -131,7 +131,7 @@ function applyTheme(){
 $('theme').onclick=()=>{themePreference=document.documentElement.dataset.theme==='dark'?'light':'dark';try{localStorage.setItem('codexweb-theme',themePreference);}catch{}applyTheme();};
 systemTheme.addEventListener('change',applyTheme);
 applyTheme();
-$('newThread').onclick=()=>{$('newProject').value=$('project').value;$('createStatus').textContent='对话将在所选项目中创建。';$('newDialog').showModal();document.dispatchEvent(new Event('choice:sync'));};
+$('newThread').onclick=()=>{$('newProject').value=$('project').value;$('createStatus').textContent='';$('newDialog').showModal();document.dispatchEvent(new Event('choice:sync'));};
 $('cancelNew').onclick=()=>$('newDialog').close();
 $('newForm').onsubmit=async e=>{
   e.preventDefault();const projectId=$('newProject').value;if(!projectId){$('createStatus').textContent='请先选择一个项目';$('newProjectChoice').focus();return;}
@@ -150,7 +150,7 @@ $('newForm').onsubmit=async e=>{
 async function updateModelSettings(){
   const id=selected,model=$('model').value,effort=$('effort').value;if(!id||!model)return;
   $('model').disabled=true;$('effort').disabled=true;
-  try{await api('/api/model',{id,model,effort});if(selected===id)$('sendStatus').textContent='模型与思考强度已更新，下条消息生效';}
+  try{await api('/api/model',{id,model,effort});}
   catch(e){error(e);try{const settings=await api('/api/model?id='+id);if(selected===id)showModelSettings(settings);}catch{}}
   finally{if(selected===id){$('model').disabled=false;$('effort').disabled=!modelCatalog.find(m=>m.id===$('model').value)?.efforts?.length;}}
 }
@@ -183,12 +183,12 @@ function updatePickerSelection(){
 }
 async function loadDirectory(path){
   const request=++pickerRequest;$('pickerPath').disabled=true;$('goPath').disabled=true;$('pickerStatus').textContent='正在读取文件夹…';$('useSelection').disabled=true;$('pickerEntries').replaceChildren();
-  try{const r=await api('/api/files/browse',{path,foldersOnly:pickerMode==='folders'});if(request!==pickerRequest||!$('filePicker').open)return;pickerPath=r.path;pickerHome=r.home;pickerItems=r.items;$('pickerPath').value=r.path;$('pickerUp').disabled=r.parent===r.path;$('pickerUp').dataset.path=r.parent;$('pickerSearch').value='';$('pickerStatus').textContent=r.truncated?'仅显示前 500 项，可输入更具体的文件夹路径。':pickerMode==='folders'?($('uploadDialog').open?'上传文件将保存到此文件夹。':'选择后会使用此文件夹创建项目。'):pickerMode==='download'?'找到 Codex 生成的文件，点击下载到当前设备。':'文件作为本机引用发送，图片作为图片输入。';renderPicker();updatePickerSelection();}
+  try{const r=await api('/api/files/browse',{path,foldersOnly:pickerMode==='folders'});if(request!==pickerRequest||!$('filePicker').open)return;pickerPath=r.path;pickerHome=r.home;pickerItems=r.items;$('pickerPath').value=r.path;$('pickerUp').disabled=r.parent===r.path;$('pickerUp').dataset.path=r.parent;$('pickerSearch').value='';$('pickerStatus').textContent=r.truncated?'仅显示前 500 项，可输入更具体的文件夹路径。':'';renderPicker();updatePickerSelection();}
   catch(e){if(request===pickerRequest){$('pickerStatus').textContent=e.message;pickerPath='';$('useSelection').disabled=true;}}
   finally{if(request===pickerRequest){$('pickerPath').disabled=false;$('goPath').disabled=false;}}
 }
 function openPicker(mode,callback,files=[],startPath){
-  pickerMode=mode;pickerCallback=callback;pickerSelection=new Map(files.map(f=>[f.path,f]));pickerPath='';$('useSelection').hidden=mode==='download';$('showHidden').checked=false;$('pickerTitle').textContent=mode==='folders'?'选择本机文件夹':mode==='download'?'下载结果文件':'附加本机文件';$('filePicker').showModal();
+  pickerMode=mode;pickerCallback=callback;pickerSelection=new Map(files.map(f=>[f.path,f]));pickerPath='';$('useSelection').hidden=mode==='download';$('showHidden').checked=false;$('pickerTitle').textContent=mode==='folders'?'选择服务器文件夹':mode==='download'?'下载结果文件':'附加服务器文件';$('filePicker').showModal();
   const project=projectCatalog.find(p=>p.id===$('project').value);const thread=allThreads.find(t=>t.id===selected);
   loadDirectory(startPath||thread?.cwd||project?.roots?.[0]?.path||undefined);
 }
@@ -207,13 +207,13 @@ $('useSelection').onclick=async()=>{
 };
 $('attachLocal').onclick=()=>{$('fileActions').hidePopover();openPicker('files',files=>{selectedAttachments=files;attachmentDrafts.set(selected,[...files]);renderAttachments();},selectedAttachments);};
 let projectCreateKey='';
-function openProjectDialog(){projectCreateKey=crypto.randomUUID();$('projectName').value='';$('projectFolder').value='';$('projectStatus').textContent='使用已有文件夹创建 Codex 项目。';$('projectDialog').showModal();}
+function openProjectDialog(){projectCreateKey=crypto.randomUUID();$('projectName').value='';$('projectFolder').value='';$('projectStatus').textContent='';$('projectDialog').showModal();}
 $('newProjectButton').onclick=openProjectDialog;
 $('newProjectFromThread').onclick=openProjectDialog;
 $('cancelProject').onclick=()=>$('projectDialog').close();
 $('chooseFolder').onclick=()=>openPicker('folders',path=>{$('projectFolder').value=path;if(!$('projectName').value)$('projectName').value=path.split('/').filter(Boolean).pop()||'项目';});
 $('projectForm').onsubmit=async e=>{
-  e.preventDefault();if(!$('projectFolder').value){$('projectStatus').textContent='请先选择本机文件夹';return;}
+  e.preventDefault();if(!$('projectFolder').value){$('projectStatus').textContent='请先选择服务器文件夹';return;}
   $('confirmProject').disabled=true;$('cancelProject').disabled=true;$('projectStatus').textContent='正在创建项目…';
   const preventClose=e=>e.preventDefault();$('projectDialog').addEventListener('cancel',preventClose);
   try{const r=await api('/api/projects/create',{name:$('projectName').value,path:$('projectFolder').value,key:projectCreateKey});addProject(r.project);$('project').value=r.project.id;$('newProject').value=r.project.id;$('search').value='';renderThreads();document.dispatchEvent(new Event('choice:sync'));$('projectNotice').hidden=false;$('projectNotice').textContent='项目已在网页中创建。桌面侧栏尚不能自动同步新增项目。';$('projectDialog').close();}

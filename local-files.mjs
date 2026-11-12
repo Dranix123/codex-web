@@ -3,7 +3,7 @@ import {homedir} from 'node:os';
 import {isAbsolute,join,dirname,basename,extname} from 'node:path';
 
 export async function resolveDirectory(path){
- if(typeof path!=='string'||!isAbsolute(path))throw Error('请输入本机文件夹的绝对路径');
+ if(typeof path!=='string'||!isAbsolute(path))throw Error('请输入服务器文件夹的绝对路径');
  const resolved=await realpath(path);
  if(!(await stat(resolved)).isDirectory())throw Error('请选择文件夹');
  return resolved;
@@ -19,10 +19,10 @@ export async function browseDirectory(path=homedir(),foldersOnly=false){
  return {path:directory,parent:dirname(directory),home:homedir(),items:items.slice(0,500),truncated:items.length>500};
 }
 export async function resolveAttachments(paths=[]){
- if(!Array.isArray(paths)||paths.length>10)throw Error('一次最多附加 10 个本机文件');
+ if(!Array.isArray(paths)||paths.length>10)throw Error('一次最多附加 10 个服务器文件');
  const files=[];
  for(const path of paths){
-  if(typeof path!=='string'||!isAbsolute(path))throw Error('请选择有效的本机文件');
+  if(typeof path!=='string'||!isAbsolute(path))throw Error('请选择有效的服务器文件');
   const resolved=await realpath(path);
   if(!(await stat(resolved)).isFile())throw Error('附件必须是文件，不能是文件夹');
   if(!files.some(f=>f.path===resolved))files.push({name:basename(resolved),path:resolved});
