@@ -1,6 +1,6 @@
 const $=id=>document.getElementById(id);
 const drafts=new Map(),attachmentDrafts=new Map(),expandedProcesses=new Set(),messageLoads=new Set(),threadIndicators=new Map();
-let projectCatalog=[],selectedAttachments=[];
+let projectCatalog=[],selectedAttachments=[],renderedMessagesKey='';
 let token='',allThreads=[],threadCursor=null,selected='',olderCursor=null,polling=false;
 async function api(path,body){
  const r=await fetch(path,body?{method:'POST',headers:{'Content-Type':'application/json','X-Codexweb-Token':token},body:JSON.stringify(body)}:{});
@@ -32,12 +32,13 @@ async function refreshThreadIndicators(){
 }
 setInterval(()=>{if(!document.hidden)refreshThreadIndicators();},3000);
 function renderMessages(messages,prepend=false){
+ const key=JSON.stringify([selected,messages]);if(!prepend&&key===renderedMessagesKey)return;renderedMessagesKey=key;
  const box=$('messages'),height=box.scrollHeight,nearBottom=box.scrollHeight-box.scrollTop-box.clientHeight<90;
  const finalIndexes=new Map();messages.forEach((m,index)=>{if(m.turnId&&m.role==='assistant'&&m.phase==='final_answer')finalIndexes.set(m.turnId,index);});
  const messageNode=m=>{
   const a=document.createElement('article');a.className='message '+m.role;
   if(m.role!=='user'){const role=document.createElement('small');role.textContent=m.phase==='commentary'?'CODEX · 过程':m.phase==='final_answer'?'CODEX · 最终回复':'CODEX · 回复';a.append(role);}
-  const p=document.createElement('p');p.textContent=m.text;a.append(p);return a;
+  if(m.role==='user'){const p=document.createElement('p');p.textContent=m.text;a.append(p);}else a.append(renderMarkdown(m.text));return a;
  };
  const nodes=[];
  for(let index=0;index<messages.length;){
@@ -110,7 +111,7 @@ $('questions').onsubmit=e=>{e.preventDefault();$('questions').querySelector('.qu
 let history=[],hasOlderLoaded=false;
 async function select(t){
  const attempt={id:t.id};desktopConnectionAttempt=attempt;
- document.body.dataset.view='chat';$('messages').replaceChildren();
+ document.body.dataset.view='chat';$('messages').replaceChildren();renderedMessagesKey='';
  if(selected){drafts.set(selected,$('text').value);attachmentDrafts.set(selected,[...selectedAttachments]);}
  selected=t.id;desktopConnected=false;questionKey='';$('questions').hidden=true;$('questions').replaceChildren();
  selectedAttachments=[...(attachmentDrafts.get(selected)||[])];renderAttachments();$('attach').disabled=false;$('downloadFiles').disabled=false;

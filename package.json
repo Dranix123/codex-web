@@ -1,1 +1,1 @@
-{"name":"codexweb","private":true,"type":"module","scripts":{"start":"node server.mjs","test":"node --test"},"engines":{"node":">=22"}}
+{"name":"codexweb","private":true,"type":"module","scripts":{"start":"node server.mjs","test":"node --test"},"engines":{"node":">=22"},"dependencies":{"markdown-it":"15.0.3"}}

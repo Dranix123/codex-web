@@ -109,7 +109,7 @@ const server=http.createServer(async(req,res)=>{
   if(u.pathname==='/api/models'){const {data}=await reader.rpc('model/list',{limit:100});return json(200,{models:data.filter(m=>!m.hidden).map(m=>({id:m.model,name:m.displayName,description:m.description,isDefault:m.isDefault,defaultEffort:m.defaultReasoningEffort,efforts:m.supportedReasoningEfforts}))});}
   if(u.pathname==='/api/model')return json(200,await ipc.modelSettings(u.searchParams.get('id')));
   if(u.pathname==='/api/owner'){await ipc.owner(u.searchParams.get('id'));return json(200,{connected:true});}
-  const file={'/':'index.html','/app.js':'app.js','/choices.js':'choices.js','/style.css':'style.css'}[u.pathname];if(!file)return json(404,{error:'未找到'});
+  const file={'/':'index.html','/app.js':'app.js','/choices.js':'choices.js','/markdown.js':'markdown.js','/markdown-it.js':'../node_modules/markdown-it/dist/browser/markdown-it.umd.min.js','/style.css':'style.css'}[u.pathname];if(!file)return json(404,{error:'未找到'});
   res.writeHead(200,{'Content-Type':file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html; charset=utf-8'});res.end(await readFile(new URL(`./public/${file}`,import.meta.url)));
  }catch(e){json(502,{error:e.message});}
 });
