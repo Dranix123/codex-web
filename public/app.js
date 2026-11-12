@@ -2,19 +2,95 @@ const $=id=>document.getElementById(id);
 const drafts=new Map(),attachmentDrafts=new Map();
 let projectCatalog=[],selectedAttachments=[];
 let token='',allThreads=[],threadCursor=null,selected='',olderCursor=null,polling=false,loading=false;
-async function api(path,body){const r=await fetch(path,body?{method:'POST',headers:{'Content-Type':'application/json','X-Codexweb-Token':token},body:JSON.stringify(body)}:{});const x=await r.json();if(r.status===401){location.replace('/');throw Error('请重新输入访问密码');}if(!r.ok)throw Error(x.error);return x;}
+async function api(path,body){
+ const r=await fetch(path,body?{method:'POST',headers:{'Content-Type':'application/json','X-Codexweb-Token':token},body:JSON.stringify(body)}:{});
+ if(r.status===401){location.replace('/');throw Object.assign(Error('请重新输入访问密码'),{status:401});}
+ const type=r.headers.get('content-type')||'';
+ if(!type.includes('application/json')){
+  const message=r.status===403?'接口访问被拒绝（HTTP 403），请重新打开网页完成验证':r.redirected?'接口返回了访问验证页面，请重新打开网页完成验证':'接口返回了非 JSON 响应（HTTP '+r.status+'），请稍后重试';
+  throw Error(message);
+ }
+ let x;try{x=await r.json();}catch{throw Error('接口响应内容不完整（HTTP '+r.status+'），请稍后重试');}
+ if(!r.ok)throw Error(x.error||'请求失败（HTTP '+r.status+'）');return x;
+}
 function error(e){$('notice').textContent=e.message;$('notice').className='error';}
 function renderThreads(){const project=$('project').value,q=$('search').value.toLowerCase();$('threads').replaceChildren();for(const t of allThreads.filter(t=>(!project||t.projectId===project)&&t.title.toLowerCase().includes(q))){const b=document.createElement('button'),title=document.createElement('span');title.className='thread-title';title.textContent=t.title.slice(0,70);b.append(title);b.className=t.id===selected?'active':'';b.setAttribute('aria-current',t.id===selected?'true':'false');b.onclick=()=>select(t);$('threads').append(b);}if(!$('threads').childElementCount){const p=document.createElement('p');p.className='no-threads';p.textContent='没有匹配的对话';$('threads').append(p);}}
 async function threads(append=false){const r=await api('/api/threads'+(append&&threadCursor?'?cursor='+encodeURIComponent(threadCursor):''));allThreads=append?[...allThreads,...r.data]:r.data;threadCursor=r.nextCursor;$('moreThreads').hidden=!threadCursor;renderThreads();}
-function renderMessages(messages,prepend=false){const box=$('messages'),height=box.scrollHeight,nearBottom=box.scrollHeight-box.scrollTop-box.clientHeight<90;const nodes=messages.map(m=>{const a=document.createElement('article');a.className='message '+m.role;const role=document.createElement('small');role.textContent=m.role==='user'?'你':'CODEX';const p=document.createElement('p');p.textContent=m.text;a.append(role,p);return a;});if(!nodes.length){const empty=document.createElement('div');empty.className='empty';empty.textContent='开始一段新对话';nodes.push(empty);}if(prepend){box.prepend(...nodes);box.scrollTop=box.scrollHeight-height;}else{box.replaceChildren(...nodes);if(nearBottom)box.scrollTop=box.scrollHeight;}}
-async function messages(older=false){const id=selected;if(!id||loading)return;loading=true;try{const r=await api('/api/messages?id='+encodeURIComponent(id)+(older&&olderCursor?'&cursor='+encodeURIComponent(olderCursor):''));if(selected!==id)return;if(older){hasOlderLoaded=true;history=[...r.messages,...history];}else {const ids=new Set(r.messages.map(m=>m.id));const first=history.findIndex(m=>ids.has(m.id));history=hasOlderLoaded&&first>=0?[...history.slice(0,first),...r.messages]:r.messages;}if(older||!hasOlderLoaded)olderCursor=r.nextCursor;$('older').hidden=!olderCursor;renderMessages(history);}finally{loading=false;}}
+function renderMessages(messages,prepend=false){const box=$('messages'),height=box.scrollHeight,nearBottom=box.scrollHeight-box.scrollTop-box.clientHeight<90;const nodes=messages.map(m=>{const a=document.createElement('article');a.className='message '+m.role;const role=document.createElement('small');role.textContent=m.role==='user'?'你':m.phase==='commentary'?'CODEX · 过程':m.phase==='final_answer'?'CODEX · 最终回复':'CODEX · 回复';const p=document.createElement('p');p.textContent=m.text;a.append(role,p);return a;});if(!nodes.length){const empty=document.createElement('div');empty.className='empty';empty.textContent='开始一段新对话';nodes.push(empty);}if(prepend){box.prepend(...nodes);box.scrollTop=box.scrollHeight-height;}else{box.replaceChildren(...nodes);if(nearBottom)box.scrollTop=box.scrollHeight;}}
+async function messages(older=false){const id=selected;if(!id||loading)return;loading=true;try{const r=await api('/api/messages?id='+encodeURIComponent(id)+(older&&olderCursor?'&cursor='+encodeURIComponent(olderCursor):''));if(selected!==id)return;if(older){hasOlderLoaded=true;history=[...r.messages,...history];}else {const ids=new Set(r.messages.map(m=>m.id));const first=history.findIndex(m=>ids.has(m.id));history=hasOlderLoaded&&first>=0?[...history.slice(0,first),...r.messages]:r.messages;}if(older||!hasOlderLoaded)olderCursor=r.nextCursor;$('older').hidden=!olderCursor;renderMessages(history);showQuestions(r.questions||[],r.questionError);}finally{loading=false;}}
+let questionKey='',blockingQuestion=false;
+function showQuestions(requests,syncError){
+ const form=$('questions');blockingQuestion=requests.some(r=>r.isBlocking)||Boolean(syncError);
+ $('send').disabled=blockingQuestion;$('text').disabled=blockingQuestion;
+ $('text').placeholder=syncError?'问题状态暂不可用，请稍后重试':blockingQuestion?'请先回答上方的问题':'给这个对话发送消息…';
+ const key=JSON.stringify([selected,requests,syncError]);if(key===questionKey)return;questionKey=key;
+ form.replaceChildren();form.hidden=!requests.length&&!syncError;
+ if(syncError){const p=document.createElement('p');p.textContent='无法同步待回答问题：'+syncError;form.append(p);return;}
+ for(const request of requests){
+  const section=document.createElement('section'),heading=document.createElement('h3');heading.textContent=request.isBlocking?'等待你回答':'Codex 提问';section.append(heading);
+  const fields=[];
+  for(const q of request.questions){
+   const field=document.createElement('fieldset'),legend=document.createElement('legend');legend.textContent=(q.header?q.header+' · ':'')+q.question;field.append(legend);
+   const radios=[];
+   for(const [i,option]of q.options.entries()){
+    const label=document.createElement('label'),radio=document.createElement('input'),body=document.createElement('span'),title=document.createElement('span');
+    radio.type='radio';radio.name=String(request.requestId)+'/'+q.id;radio.value=option.label;title.textContent=option.label;body.append(title);
+    if(option.description){const detail=document.createElement('small');detail.textContent=option.description;body.append(detail);}
+    label.className='question-option';label.append(radio,body);field.append(label);radios.push(radio);
+   }
+   const free=document.createElement('input');free.type=q.isSecret?'password':'text';free.placeholder=q.options.length?'或输入其他答案':'输入你的答案';free.setAttribute('aria-label',q.question+'：自定义答案');free.maxLength=16000;free.autocomplete='off';
+   free.oninput=()=>{if(free.value)for(const radio of radios)radio.checked=false;};
+   for(const radio of radios)radio.onchange=()=>{free.value='';};
+   field.append(free);section.append(field);fields.push({q,radios,free});
+  }
+  const submit=document.createElement('button'),status=document.createElement('p');submit.type='button';submit.className='question-submit';submit.textContent='提交答案';status.className='question-status';status.setAttribute('role','status');section.append(submit,status);
+  submit.onclick=async()=>{
+   const id=selected,answers={};
+   for(const {q,radios,free}of fields){const answer=free.value.trim()||radios.find(r=>r.checked)?.value;if(!answer){status.textContent='请回答每个问题';free.focus();return;}answers[q.id]={answers:[answer]};}
+   submit.disabled=true;status.textContent='提交中…';
+   try{await api('/api/questions/answer',{id,requestId:request.requestId,answers});if(selected!==id)return;status.textContent='答案已提交，正在同步…';await messages();}
+   catch(e){if(selected===id){status.textContent=e.message;submit.disabled=false;}}
+  };
+  form.append(section);
+ }
+}
+$('questions').onsubmit=e=>{e.preventDefault();$('questions').querySelector('.question-submit:not(:disabled)')?.click();};
+
 let history=[],hasOlderLoaded=false;
-async function select(t){document.body.dataset.view='chat';$('messages').replaceChildren();if(selected){drafts.set(selected,$('text').value);attachmentDrafts.set(selected,[...selectedAttachments]);}selected=t.id;selectedAttachments=[...(attachmentDrafts.get(selected)||[])];renderAttachments();$('attach').disabled=false;$('downloadFiles').disabled=false;hasOlderLoaded=false;$('text').value=drafts.get(selected)||'';history=[];$('title').textContent=t.title;$('open').disabled=false;$('text').disabled=false;$('send').disabled=true;$('model').disabled=true;$('effort').disabled=true;$('notice').className='';$('notice').textContent='正在检查桌面会话…';renderThreads();try{await messages();$('messages').scrollTop=$('messages').scrollHeight;for(let attempt=0;attempt<2;attempt++){try{await api('/api/owner?id='+t.id);break;}catch(e){if(attempt===1)throw e;await new Promise(resolve=>setTimeout(resolve,600));if(selected!==t.id)return;}}if(selected!==t.id)return;$('notice').textContent='已连接桌面会话 · 每 3 秒同步纯文本；消息会直接发送。';$('send').disabled=false;const settings=await api('/api/model?id='+t.id);if(selected===t.id){await modelsReady;if(selected!==t.id)return;showModelSettings(settings);$('model').disabled=false;}}catch(e){if(selected===t.id)$('notice').textContent='请先在桌面 App 打开这个对话，再点「在桌面打开」重试连接。';}}
-async function limits(){try{const r=await api('/api/limits'),buckets=Object.values(r.rateLimitsByLimitId||{codex:r.rateLimits});$('limits').replaceChildren();for(const b of buckets.filter(Boolean)){const card=document.createElement('div');card.className='bucket';const h=document.createElement('h3');h.textContent=b.limitName||b.limitId||'Codex';card.append(h);for(const [key,label]of [['primary','短期额度'],['secondary','每周额度']]){const w=b[key];if(!w)continue;const p=document.createElement('p');p.textContent=`${label} · 剩余 ${Math.max(0,100-w.usedPercent)}% · ${w.windowDurationMins??'?'} 分钟窗口`;const progress=document.createElement('progress');progress.max=100;progress.setAttribute('aria-label',label+'剩余额度');progress.value=Math.max(0,100-w.usedPercent);const reset=document.createElement('p');reset.textContent='重置：'+(w.resetsAt?new Date(w.resetsAt*1000).toLocaleString():'未知');card.append(p,progress,reset);}if(b.credits){const p=document.createElement('p');p.textContent='积分：'+(b.credits.balance??'未知');card.append(p);}$('limits').append(card);}$('quotaTime').textContent='更新于 '+new Date().toLocaleTimeString();}catch(e){$('limits').textContent='额度暂不可用：'+e.message;$('quotaTime').textContent='未取得实时额度';}}
+async function select(t){document.body.dataset.view='chat';$('messages').replaceChildren();if(selected){drafts.set(selected,$('text').value);attachmentDrafts.set(selected,[...selectedAttachments]);}selected=t.id;questionKey='';$('questions').hidden=true;$('questions').replaceChildren();selectedAttachments=[...(attachmentDrafts.get(selected)||[])];renderAttachments();$('attach').disabled=false;$('downloadFiles').disabled=false;hasOlderLoaded=false;$('text').value=drafts.get(selected)||'';history=[];blockingQuestion=true;$('title').textContent=t.title;$('open').disabled=false;$('text').disabled=true;$('send').disabled=true;$('model').disabled=true;$('effort').disabled=true;$('notice').className='';$('notice').textContent='';renderThreads();try{await messages();$('messages').scrollTop=$('messages').scrollHeight;for(let attempt=0;attempt<2;attempt++){try{await api('/api/owner?id='+t.id);break;}catch(e){if(attempt===1)throw e;await new Promise(resolve=>setTimeout(resolve,600));if(selected!==t.id)return;}}if(selected!==t.id)return;$('notice').textContent='';$('send').disabled=blockingQuestion;const settings=await api('/api/model?id='+t.id);if(selected===t.id){await modelsReady;if(selected!==t.id)return;showModelSettings(settings);$('model').disabled=false;}}catch(e){if(selected===t.id)$('notice').textContent='请先在桌面 App 打开这个对话，再点「在桌面打开」重试连接。';}}
+let limitsPending=null,limitsUpdatedAt=0;
+function limits(){
+ if(limitsPending)return limitsPending;
+ limitsPending=(async()=>{
+  $('refreshLimits').disabled=true;$('refreshLimits').textContent='刷新中…';
+  try{
+   for(let attempt=0;attempt<2;attempt++){
+    try{
+     const r=await api('/api/limits');
+     const buckets=Object.values(r.rateLimitsByLimitId||{codex:r.rateLimits});$('limits').replaceChildren();for(const b of buckets.filter(Boolean)){const card=document.createElement('div');card.className='bucket';const h=document.createElement('h3');h.textContent=b.limitName||b.limitId||'Codex';card.append(h);for(const [key,label]of [['primary','短期额度'],['secondary','每周额度']]){const w=b[key];if(!w)continue;const p=document.createElement('p');p.textContent=`${label} · 剩余 ${Math.max(0,100-w.usedPercent)}% · ${w.windowDurationMins??'?'} 分钟窗口`;const progress=document.createElement('progress');progress.max=100;progress.setAttribute('aria-label',label+'剩余额度');progress.value=Math.max(0,100-w.usedPercent);const reset=document.createElement('p');reset.textContent='重置：'+(w.resetsAt?new Date(w.resetsAt*1000).toLocaleString():'未知');card.append(p,progress,reset);}if(b.credits){const p=document.createElement('p');p.textContent='积分：'+(b.credits.balance??'未知');card.append(p);}$('limits').append(card);}$('quotaTime').textContent='更新于 '+new Date().toLocaleTimeString();
+     limitsUpdatedAt=Date.now();return;
+    }catch(e){
+     if(e.status===401)return;
+     if(attempt===0){
+      if(!limitsUpdatedAt)$('limits').textContent='暂时无法读取额度，正在自动重试…';
+      else $('quotaTime').textContent='正在重试，暂显示上次额度';
+      await new Promise(resolve=>setTimeout(resolve,1500));continue;
+     }
+     if(!limitsUpdatedAt){$('limits').textContent='额度暂不可用：'+e.message;$('quotaTime').textContent='未取得实时额度';}
+     else $('quotaTime').textContent='更新失败，显示上次额度（'+new Date(limitsUpdatedAt).toLocaleTimeString()+'）：'+e.message;
+    }
+   }
+  }finally{$('refreshLimits').disabled=false;$('refreshLimits').textContent='刷新';}
+ })().finally(()=>{limitsPending=null;});
+ return limitsPending;
+}
+$('quota').addEventListener('toggle',e=>{if(e.newState==='open'&&Date.now()-limitsUpdatedAt>60000)limits();});
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&Date.now()-limitsUpdatedAt>60000)limits();});
+
 $('project').onchange=renderThreads;$('search').oninput=renderThreads;$('moreThreads').onclick=()=>threads(true).catch(error);$('older').onclick=()=>messages(true).catch(error);$('refreshLimits').onclick=limits;
 $('open').onclick=async()=>{try{await api('/api/open',{id:selected});const thread=allThreads.find(t=>t.id===selected);if(thread)await select(thread);}catch(e){error(e);}};
-$('composer').onsubmit=async e=>{e.preventDefault();const text=$('text').value,id=selected,files=selectedAttachments.map(f=>f.path);if(!text.trim()&&!files.length)return;$('send').disabled=true;$('sendStatus').textContent='发送中…';try{await api('/api/send',{id,text,files});drafts.delete(id);const remaining=(attachmentDrafts.get(id)||[]).filter(f=>!files.includes(f.path));attachmentDrafts.set(id,remaining);if(selected===id){$('text').value='';selectedAttachments=selectedAttachments.filter(f=>!files.includes(f.path));renderAttachments();}$('sendStatus').textContent='已交给桌面 App';await messages();}catch(e){error(e);$('sendStatus').textContent='请先核对历史，避免重复发送';}finally{$('send').disabled=false;}};
-async function init(){const r=await api('/api/bootstrap');token=r.token;$('connection').textContent=r.ipcError?'桌面 IPC 不可用':'本机已连接';$('notice').textContent=r.notice;for(const p of r.projects)addProject(p);await threads();limits();}
+$('composer').onsubmit=async e=>{e.preventDefault();if(blockingQuestion)return;const text=$('text').value,id=selected,files=selectedAttachments.map(f=>f.path);if(!text.trim()&&!files.length)return;$('send').disabled=true;$('sendStatus').textContent='发送中…';try{await api('/api/send',{id,text,files});drafts.delete(id);const remaining=(attachmentDrafts.get(id)||[]).filter(f=>!files.includes(f.path));attachmentDrafts.set(id,remaining);if(selected===id){$('text').value='';selectedAttachments=selectedAttachments.filter(f=>!files.includes(f.path));renderAttachments();}$('sendStatus').textContent='';await messages();}catch(e){error(e);$('sendStatus').textContent='请先核对历史，避免重复发送';}finally{$('send').disabled=blockingQuestion;}};
+async function init(){const r=await api('/api/bootstrap');token=r.token;$('connection').textContent=r.ipcError?'桌面 IPC 不可用':'本机已连接';$('notice').textContent='';for(const p of r.projects)addProject(p);await threads();limits();}
 init().catch(error);
 let modelCatalog=[];
 const effortLabels={none:'无',minimal:'最低',low:'低',medium:'中',high:'高',xhigh:'极高',max:'最大',ultra:'Ultra'};

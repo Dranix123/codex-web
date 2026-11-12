@@ -18,6 +18,12 @@ const state=async()=>JSON.parse(await readFile(`${homedir()}/.codex/.codex-globa
 const createdPath=new URL('./.local/threads.json',import.meta.url);
 let createdIds=JSON.parse(await readFile(createdPath,'utf8').catch(e=>{if(e.code==='ENOENT')return '[]';throw e;}));
 const openThread=id=>promisify(execFile)('/usr/bin/open',['-a','/Applications/ChatGPT.app',`codex://threads/${id}?hostId=local`]);
+const userText=text=>{
+ const match=text.trim().match(/^<send_user_message_question_reply>\s*([\s\S]*?)\s*<\/send_user_message_question_reply>$/);
+ if(!match)return text;
+ try{const value=JSON.parse(match[1]),replies=Array.isArray(value)?value:[value];if(replies.every(r=>typeof r.question==='string'&&typeof r.answer==='string'))return replies.map(r=>'回答「'+r.question+'」：'+r.answer).join('\n');}catch{}
+ return text;
+};
 const publicThread=t=>({id:t.id,title:t.name||t.preview||'未命名对话',cwd:t.cwd,projectId:t.projectId,updatedAt:t.updatedAt});
 const server=http.createServer(async(req,res)=>{
  res.setHeader('Cache-Control','no-store');res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'");
@@ -70,6 +76,7 @@ const server=http.createServer(async(req,res)=>{
    if(!/^[a-zA-Z0-9-]{10,80}$/.test(b.id||''))return json(400,{error:'无效对话'});
    if(u.pathname==='/api/model'){const {data:models}=await reader.rpc('model/list',{limit:100});const model=models.find(m=>m.model===b.model&&!m.hidden);if(!model)return json(400,{error:'无效模型'});if(b.effort!=null&&b.effort!==''&&!model.supportedReasoningEfforts.some(e=>e.reasoningEffort===b.effort))return json(400,{error:'该模型不支持这个思考强度'});const result=await ipc.setModel(b.id,model.model,b.effort||model.defaultReasoningEffort);if(!result.applied)return json(409,{error:'模型设置未应用，请重新选择对话'});return json(200,result);}
    if(u.pathname==='/api/open'){await openThread(b.id);return json(200,{ok:true});}
+   if(u.pathname==='/api/questions/answer'){await ipc.answer(b.id,b.requestId,b.answers);return json(200,{ok:true});}
    if(u.pathname==='/api/send'){if(typeof b.text!=='string')return json(400,{error:'无效消息'});let files;try{files=await resolveAttachments(b.files);}catch(e){return json(400,{error:e.message});}if(!b.text.trim()&&!files.length)return json(400,{error:'请输入消息或附加文件'});if(ipcError)throw Error(ipcError);await ipc.send(b.id,b.text,files);return json(200,{ok:true});}
    return json(404,{error:'未找到'});
   }
@@ -85,8 +92,9 @@ const server=http.createServer(async(req,res)=>{
   }
   if(u.pathname==='/api/messages'){
    const id=u.searchParams.get('id');const r=await reader.rpc('thread/items/list',{threadId:id,limit:100,sortDirection:'desc',cursor:u.searchParams.get('cursor')||null});
-   const messages=r.data.flatMap(({item,turnId})=>item.type==='agentMessage'?[{id:item.id,turnId,role:'assistant',text:item.text}]:item.type==='userMessage'?[{id:item.id,turnId,role:'user',text:item.content.map(c=>c.type==='text'?c.text:c.type==='mention'?'📎 '+c.name:c.type==='localImage'?'📎 '+basename(c.path):c.type==='image'?'📎 图片':'').filter(Boolean).join('\n')}]:[]).reverse();
-   return json(200,{messages,nextCursor:r.nextCursor});
+   const messages=r.data.flatMap(({item,turnId})=>item.type==='agentMessage'?[{id:item.id,turnId,role:'assistant',text:item.text,phase:item.phase}]:item.type==='userMessage'?[{id:item.id,turnId,role:'user',text:item.content.map(c=>c.type==='text'?userText(c.text):c.type==='mention'?'📎 '+c.name:c.type==='localImage'?'📎 '+basename(c.path):c.type==='image'?'📎 图片':'').filter(Boolean).join('\n')}]:[]).reverse();
+   let questions=[],questionError=null;try{questions=await ipc.questions(id);}catch(e){questionError=e.message;}
+   return json(200,{messages,nextCursor:r.nextCursor,questions,questionError});
   }
   if(u.pathname==='/api/limits'){const r=await reader.rpc('account/rateLimits/read');return json(200,{rateLimits:r.rateLimits,rateLimitsByLimitId:r.rateLimitsByLimitId});}
   if(u.pathname==='/api/models'){const {data}=await reader.rpc('model/list',{limit:100});return json(200,{models:data.filter(m=>!m.hidden).map(m=>({id:m.model,name:m.displayName,description:m.description,isDefault:m.isDefault,defaultEffort:m.defaultReasoningEffort,efforts:m.supportedReasoningEfforts}))});}
