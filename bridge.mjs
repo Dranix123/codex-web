@@ -1,4 +1,6 @@
 import net from 'node:net';
+import {mkdir,rmdir} from 'node:fs/promises';
+import {join} from 'node:path';
 import {attachmentInput} from './local-files.mjs';
 import {randomUUID} from 'node:crypto';
 import {spawn,execFileSync} from 'node:child_process';
@@ -72,7 +74,16 @@ export class Reader {
   rpc(method,params={}){if(!['initialize','project/list','thread/list','thread/read','thread/items/list','account/rateLimits/read','model/list'].includes(method))throw Error('只读客户端禁止此方法');return this.request(method,params);}
   async listProjects(){const data=[];let cursor;do{const page=await this.rpc('project/list',{limit:100,cursor});data.push(...page.data);cursor=page.nextCursor;}while(cursor);return {data};}
   async createProject(name,path,idempotencyKey){return (await this.request('project/create',{name,roots:[{path}],idempotencyKey})).project;}
-  async createThread(project,model,effort){const {thread}=await this.request('thread/start',{projectId:project.id,cwd:project.roots[0].path,ephemeral:false,...model?{model}:{},...effort?{config:{model_reasoning_effort:effort}}:{}});await this.request('thread/name/set',{threadId:thread.id,name:'新对话'});await this.request('thread/unsubscribe',{threadId:thread.id});return {...thread,name:'新对话'};}
+  async createThread(project,model,effort){
+    const cwd=project?project.roots[0].path:join(homedir(),'Documents','Codex',new Date().toISOString().slice(0,10)+'-'+randomUUID());
+    if(!project)await mkdir(cwd,{recursive:true});
+    let thread;
+    try{({thread}=await this.request('thread/start',{projectId:project?.id??null,cwd,ephemeral:false,...model?{model}:{},...effort?{config:{model_reasoning_effort:effort}}:{}}));}
+    catch(e){if(!project)await rmdir(cwd).catch(()=>{});throw e;}
+    await this.request('thread/name/set',{threadId:thread.id,name:'新对话'});
+    await this.request('thread/unsubscribe',{threadId:thread.id});
+    return {...thread,name:'新对话'};
+  }
   request(method,params){return new Promise((resolve,reject)=>{const id=++this.sequence,timer=setTimeout(()=>{this.pending.delete(id);reject(Error(`${method} 超时`));},30000);this.pending.set(id,{resolve:v=>{clearTimeout(timer);resolve(v);},reject:e=>{clearTimeout(timer);reject(e);}});this.process.stdin.write(JSON.stringify({id,method,params})+'\n');});}
 }
 

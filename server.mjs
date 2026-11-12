@@ -62,9 +62,11 @@ const server=http.createServer(async(req,res)=>{
     return json(201,{project});
    }
    if(u.pathname==='/api/create'){
-    const {data:projects}=await reader.listProjects();
-    const project=projects.find(p=>p.id===b.projectId);
-    if(!project?.roots?.length)return json(400,{error:'请选择有效的项目'});
+    let project=null;
+    if(b.projectId!=null&&b.projectId!==''){
+     const {data:projects}=await reader.listProjects();project=projects.find(p=>p.id===b.projectId);
+     if(!project?.roots?.length)return json(400,{error:'请选择有效的项目'});
+    }
     let model;
     if(b.model||b.effort){const {data:models}=await reader.rpc('model/list',{limit:100});model=models.find(m=>!m.hidden&&(b.model?m.model===b.model:m.isDefault));if(!model)return json(400,{error:'无效模型'});if(b.effort&&!model.supportedReasoningEfforts.some(e=>e.reasoningEffort===b.effort))return json(400,{error:'该模型不支持这个思考强度'});}
     const thread=await reader.createThread(project,model?.model,b.effort||undefined);

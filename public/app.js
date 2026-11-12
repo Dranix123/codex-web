@@ -156,12 +156,12 @@ applyTheme();
 $('newThread').onclick=()=>{$('newProject').value=$('project').value;$('createStatus').textContent='';$('newDialog').showModal();document.dispatchEvent(new Event('choice:sync'));};
 $('cancelNew').onclick=()=>$('newDialog').close();
 $('newForm').onsubmit=async e=>{
-  e.preventDefault();const projectId=$('newProject').value;if(!projectId){$('createStatus').textContent='请先选择一个项目';$('newProjectChoice').focus();return;}
+  e.preventDefault();const projectId=$('newProject').value;
   $('confirmNew').disabled=true;$('cancelNew').disabled=true;$('createStatus').textContent='正在创建对话…';
   const preventClose=e=>e.preventDefault();$('newDialog').addEventListener('cancel',preventClose);
   try{
     const r=await api('/api/create',{projectId,model:$('newModel').value||undefined,effort:$('newEffort').value||undefined});
-    $('project').value=projectId;$('search').value='';
+    $('project').value=projectId;$('search').value='';document.dispatchEvent(new Event('choice:sync'));
     allThreads=[r.thread,...allThreads.filter(t=>t.id!==r.thread.id)];
     $('newDialog').close();await select(r.thread);
     if(r.warning)$('notice').textContent=r.warning;

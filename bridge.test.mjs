@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {stat,rmdir} from 'node:fs/promises';
 import {DesktopIPC,Reader,pendingQuestions} from './bridge.mjs';
 test('缺少桌面 owner 时拒绝发送，不另起推理',async()=>{
  const bridge=new DesktopIPC();const calls=[];
@@ -87,4 +88,29 @@ test('按桌面规范历史的轮次顺序判断，不依赖对象插入顺序',
   entitiesByKey:{current:{turnId:'current',status:'inProgress',items:[]},old:{turnId:'old',status:'inProgress',items:[item]}}
  }}};
  assert.deepEqual(pendingQuestions(state),[]);
+});
+
+
+test('无项目对话使用独立目录、空项目归属，并保留模型和 effort',async t=>{
+ const reader=new Reader(),calls=[],directories=[];
+ t.after(async()=>{for(const directory of directories)await rmdir(directory);});
+ reader.request=async(method,params)=>{
+  calls.push({method,params});
+  if(method==='thread/start'){directories.push(params.cwd);return {thread:{id:'projectless-thread',cwd:params.cwd,projectId:params.projectId}};}
+  return {};
+ };
+ const first=await reader.createThread(null,'test-model','high');
+ const second=await reader.createThread(null);
+ assert.equal(first.projectId,null);assert.notEqual(first.cwd,second.cwd);
+ assert.match(first.cwd,/\/Documents\/Codex\/\d{4}-\d{2}-\d{2}-[a-f0-9-]+$/);
+ assert.equal((await stat(first.cwd)).isDirectory(),true);
+ assert.equal(calls[0].params.model,'test-model');assert.equal(calls[0].params.config.model_reasoning_effort,'high');
+ assert.deepEqual(calls.slice(0,3).map(c=>c.method),['thread/start','thread/name/set','thread/unsubscribe']);
+});
+
+test('无项目对话启动失败时移除新建的空目录',async()=>{
+ const reader=new Reader();let cwd;
+ reader.request=async(method,params)=>{cwd=params.cwd;throw Error('start failed');};
+ await assert.rejects(reader.createThread(null),/start failed/);
+ await assert.rejects(stat(cwd),{code:'ENOENT'});
 });
