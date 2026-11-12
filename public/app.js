@@ -2,7 +2,7 @@ const $=id=>document.getElementById(id);
 const drafts=new Map(),attachmentDrafts=new Map(),expandedProcesses=new Set(),messageLoads=new Set(),threadIndicators=new Map();
 let projectCatalog=[],selectedAttachments=[],renderedMessagesKey='';
 let token='',allThreads=[],threadCursor=null,selected='',olderCursor=null,polling=false;
-async function api(path,body){
+async function api(path,body,attempt=0){
  const r=await fetch(path,body?{method:'POST',headers:{'Content-Type':'application/json','X-Codexweb-Token':token},body:JSON.stringify(body)}:{});
  if(r.status===401){location.replace('/');throw Object.assign(Error('请重新输入访问密码'),{status:401});}
  const type=r.headers.get('content-type')||'';
@@ -10,10 +10,10 @@ async function api(path,body){
   const message=r.status===403?'接口访问被拒绝（HTTP 403），请重新打开网页完成验证':r.redirected?'接口返回了访问验证页面，请重新打开网页完成验证':'接口返回了非 JSON 响应（HTTP '+r.status+'），请稍后重试';
   throw Error(message);
  }
- let x;try{x=await r.json();}catch{throw Error('接口响应内容不完整（HTTP '+r.status+'），请稍后重试');}
+ let x;try{x=await r.json();}catch{if(!body&&attempt===0){await new Promise(resolve=>setTimeout(resolve,350));return api(path,undefined,1);}throw Error('接口响应内容不完整（HTTP '+r.status+'），请稍后重试');}
  if(!r.ok){if(x.error?.includes('no-client-found'))throw Object.assign(Error('桌面对话尚未连接，请在桌面打开后重试'),{kind:'connection'});throw Error(x.error||'请求失败（HTTP '+r.status+'）');}return x;
 }
-function error(e){if(e.kind==='connection')$('notice').dataset.kind='connection';else delete $('notice').dataset.kind;$('notice').textContent=e.message;$('notice').className='error';}
+function error(e){if(e.kind)$('notice').dataset.kind=e.kind;else delete $('notice').dataset.kind;$('notice').textContent=e.message;$('notice').className='error';}
 function renderThreads(){const project=$('project').value,q=$('search').value.toLowerCase();$('threads').replaceChildren();for(const t of allThreads.filter(t=>(!project||t.projectId===project)&&t.title.toLowerCase().includes(q))){const b=document.createElement('button'),title=document.createElement('span');title.className='thread-title';title.textContent=t.title.slice(0,70);const indicator=document.createElement('span');indicator.className='thread-indicator';indicator.setAttribute('role','img');indicator.hidden=true;b.dataset.threadId=t.id;b.append(title,indicator);b.className=t.id===selected?'active':'';b.setAttribute('aria-current',t.id===selected?'true':'false');b.onclick=()=>select(t);$('threads').append(b);}if(!$('threads').childElementCount){const p=document.createElement('p');p.className='no-threads';p.textContent='没有匹配的对话';$('threads').append(p);}updateThreadIndicators();}
 async function threads(append=false){const r=await api('/api/threads'+(append&&threadCursor?'?cursor='+encodeURIComponent(threadCursor):''));allThreads=append?[...allThreads,...r.data]:r.data;threadCursor=r.nextCursor;$('moreThreads').hidden=!threadCursor;renderThreads();refreshThreadIndicators();}
 function updateThreadIndicators(){
@@ -55,7 +55,7 @@ function renderMessages(messages,prepend=false){
  if(!nodes.length){const empty=document.createElement('div');empty.className='empty';empty.textContent='开始一段新对话';nodes.push(empty);}
  if(prepend){box.prepend(...nodes);box.scrollTop=box.scrollHeight-height;}else{box.replaceChildren(...nodes);if(nearBottom)box.scrollTop=box.scrollHeight;}
 }
-async function messages(older=false){const id=selected;if(!id||messageLoads.has(id))return;messageLoads.add(id);try{const r=await api('/api/messages?id='+encodeURIComponent(id)+(older&&olderCursor?'&cursor='+encodeURIComponent(olderCursor):''));if(selected!==id)return;if(older){hasOlderLoaded=true;history=[...r.messages,...history];}else {const ids=new Set(r.messages.map(m=>m.id));const first=history.findIndex(m=>ids.has(m.id));history=hasOlderLoaded&&first>=0?[...history.slice(0,first),...r.messages]:r.messages;}if(older||!hasOlderLoaded)olderCursor=r.nextCursor;$('older').hidden=!olderCursor;renderMessages(history);showQuestions(r.questions||[]);syncDesktopConnection(r.questionError);}finally{messageLoads.delete(id);}}
+async function messages(older=false){const id=selected;if(!id||messageLoads.has(id))return;messageLoads.add(id);try{const r=await api('/api/messages?id='+encodeURIComponent(id)+(older&&olderCursor?'&cursor='+encodeURIComponent(olderCursor):''));if(selected!==id)return;if(older){hasOlderLoaded=true;history=[...r.messages,...history];}else {const ids=new Set(r.messages.map(m=>m.id));const first=history.findIndex(m=>ids.has(m.id));history=hasOlderLoaded&&first>=0?[...history.slice(0,first),...r.messages]:r.messages;}if(older||!hasOlderLoaded)olderCursor=r.nextCursor;$('older').hidden=!olderCursor;renderMessages(history);if($('notice').dataset.kind==='history'){$('notice').textContent='';delete $('notice').dataset.kind;}showQuestions(r.questions||[]);syncDesktopConnection(r.questionError);}catch(e){if(selected===id)throw Object.assign(e,{kind:'history'});}finally{messageLoads.delete(id);}}
 let questionKey='',blockingQuestion=false,desktopConnected=false,desktopConnectionAttempt=null;
 function syncDesktopConnection(syncError){
  const connected=!syncError,wasConnected=desktopConnected;desktopConnected=connected;
@@ -69,7 +69,7 @@ function syncDesktopConnection(syncError){
  if(notice.dataset.kind==='connection'){notice.textContent='';delete notice.dataset.kind;}
  if(!wasConnected){
   const id=selected;
-  (async()=>{await modelsReady;if(selected!==id)return;const settings=await api('/api/model?id='+encodeURIComponent(id));if(selected!==id||!desktopConnected)return;showModelSettings(settings);$('model').disabled=false;})().catch(e=>{if(selected===id){desktopConnected=false;error(e);}});
+  (async()=>{await modelsReady;if(selected!==id)return;const settings=await api('/api/model?id='+encodeURIComponent(id));if(selected!==id||!desktopConnected)return;showModelSettings(settings);$('model').disabled=false;if(notice.dataset.kind==='model'){notice.textContent='';delete notice.dataset.kind;}})().catch(e=>{if(selected===id){desktopConnected=false;error(Object.assign(e,{kind:'model'}));}});
  }
 }
 function showQuestions(requests){
@@ -163,7 +163,7 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden&&Date.now(
 
 $('project').onchange=renderThreads;$('search').oninput=renderThreads;$('moreThreads').onclick=()=>threads(true).catch(error);$('older').onclick=()=>messages(true).catch(error);$('refreshLimits').onclick=limits;
 $('open').onclick=()=>{const thread=allThreads.find(t=>t.id===selected);if(thread)select(thread);};
-$('composer').onsubmit=async e=>{e.preventDefault();if(blockingQuestion)return;const text=$('text').value,id=selected,files=selectedAttachments.map(f=>f.path);if(!text.trim()&&!files.length)return;$('send').disabled=true;$('sendStatus').textContent='发送中…';try{await api('/api/send',{id,text,files});drafts.delete(id);const remaining=(attachmentDrafts.get(id)||[]).filter(f=>!files.includes(f.path));attachmentDrafts.set(id,remaining);if(selected===id){$('text').value='';selectedAttachments=selectedAttachments.filter(f=>!files.includes(f.path));renderAttachments();}$('sendStatus').textContent='';await messages();}catch(e){error(e);$('sendStatus').textContent=e.kind==='connection'?'':'请先核对历史，避免重复发送';}finally{$('send').disabled=blockingQuestion;}};
+$('composer').onsubmit=async e=>{e.preventDefault();if(blockingQuestion)return;const text=$('text').value,id=selected,files=selectedAttachments.map(f=>f.path);if(!text.trim()&&!files.length)return;$('send').disabled=true;$('sendStatus').textContent='发送中…';try{await api('/api/send',{id,text,files});drafts.delete(id);const remaining=(attachmentDrafts.get(id)||[]).filter(f=>!files.includes(f.path));attachmentDrafts.set(id,remaining);if(selected===id){$('text').value='';selectedAttachments=selectedAttachments.filter(f=>!files.includes(f.path));renderAttachments();}$('sendStatus').textContent='';await messages().catch(error);}catch(e){error(e);$('sendStatus').textContent=e.kind==='connection'?'':'请先核对历史，避免重复发送';}finally{$('send').disabled=blockingQuestion;}};
 async function init(){const r=await api('/api/bootstrap');token=r.token;$('connection').textContent=r.ipcError?'桌面 IPC 不可用':'服务器已连接';$('notice').textContent='';for(const p of r.projects)addProject(p);await threads();limits();}
 init().catch(error);
 let modelCatalog=[];
@@ -347,16 +347,21 @@ enhanceChoices(['project','newProject','model','effort','newModel','newEffort'],
 
 $('lock').onclick=async()=>{await fetch('/auth/logout',{method:'POST'});location.replace('/');};
 
-async function startDownload(file,button){
-  button.disabled=true;$('pickerStatus').textContent='正在准备下载：'+file.name;
+$('messages').addEventListener('click',event=>{
+ const link=event.target.closest?.('a[data-download-path]');if(!link)return;
+ event.preventDefault();startDownload({path:link.dataset.downloadPath,name:link.download},link,true);
+});
+async function startDownload(file,button,inline=false){
+  if(button.getAttribute('aria-busy')==='true')return;
+  button.disabled=true;button.setAttribute('aria-busy','true');if(!inline)$('pickerStatus').textContent='正在准备下载：'+file.name;
   try{
     const url='/api/files/download?'+new URLSearchParams({path:file.path});
     const response=await fetch(url,{method:'HEAD'});
     if(response.status===401){location.replace('/');return;}
-    if(!response.ok)throw Error('文件不存在或无法读取，请刷新文件夹后重试');
+    if(!response.ok)throw Error('文件不存在或无法读取'+(inline?'':'，请刷新文件夹后重试'));
     const link=document.createElement('a');link.href=url;link.download=file.name;document.body.append(link);link.click();link.remove();
-    $('pickerStatus').textContent='已请求下载：'+file.name+'。请查看浏览器的下载列表。';
-  }catch(e){$('pickerStatus').textContent=e.message;}
-  finally{button.disabled=false;}
+    if(!inline)$('pickerStatus').textContent='已请求下载：'+file.name+'。请查看浏览器的下载列表。';
+  }catch(e){if(inline)error(e);else $('pickerStatus').textContent=e.message;}
+  finally{button.disabled=false;button.removeAttribute('aria-busy');}
 }
 $('downloadFiles').onclick=()=>openPicker('download',null);

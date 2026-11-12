@@ -10,9 +10,17 @@ for(const name of ['th_open','td_open'])markdownRenderer.renderer.rules[name]=(t
  if(align){token.attrs=token.attrs.filter(([name])=>name!=='style');token.attrSet('class','align-'+align);}
  return self.renderToken(tokens,index,options);
 };
+function markdownDownloadPath(href){
+ if(!href.startsWith('/')||href.startsWith('//')||/^\/(api|auth)\//.test(href))return null;
+ try{return decodeURIComponent(href.split(/[?#]/,1)[0]);}catch{return null;}
+}
 function renderMarkdown(text){
  const body=document.createElement('div');body.className='markdown-body';body.innerHTML=markdownRenderer.render(text);
- for(const link of body.querySelectorAll('a[href]'))if(/^(https?:)?\/\//i.test(link.getAttribute('href'))){link.target='_blank';link.rel='noopener noreferrer';}
+ for(const link of body.querySelectorAll('a[href]')){
+  const href=link.getAttribute('href'),path=markdownDownloadPath(href);
+  if(path){link.dataset.downloadPath=path;link.href='/api/files/download?'+new URLSearchParams({path});link.download=path.split('/').pop();}
+  else if(/^(https?:)?\/\//i.test(href)){link.target='_blank';link.rel='noopener noreferrer';}
+ }
  for(const table of body.querySelectorAll('table')){
   const wrap=document.createElement('div');wrap.className='markdown-table';wrap.tabIndex=0;wrap.setAttribute('role','region');wrap.setAttribute('aria-label','表格');table.before(wrap);wrap.append(table);
  }

@@ -29,3 +29,12 @@ test('普通链接正常排版，图片引用不自动请求图片',()=>{
  assert.match(html,/<a href="https:\/\/example.com\/image.png">示意图<\/a>/);
  assert.doesNotMatch(html,/<img|href="data:/);
 });
+
+
+test('服务器文件链接正确解码中文空格，网页链接不转换为下载',()=>{
+ const path=href=>{context.downloadHref=href;return vm.runInContext('markdownDownloadPath(downloadHref)',context);};
+ assert.equal(path('/Volumes/PortableSSD/output/更新%20PPT.pptx'),'/Volumes/PortableSSD/output/更新 PPT.pptx');
+ assert.equal(path('/Users/test/result.pdf#page=2'),'/Users/test/result.pdf');
+ assert.equal(path('/tmp/result%2520.pdf'),'/tmp/result%20.pdf');
+ for(const href of ['https://example.com/result.pdf','//example.com/a','javascript:alert(1)','#heading','/api/files/download?path=x','/auth/status'])assert.equal(path(href),null);
+});
