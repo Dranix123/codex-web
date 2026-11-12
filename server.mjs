@@ -1,4 +1,5 @@
 import http from 'node:http';
+import {downloadFile} from './downloads.mjs';
 import {createPasswordGate} from './auth.mjs';
 import {readFile,writeFile,mkdir} from 'node:fs/promises';
 import {homedir} from 'node:os';
@@ -24,6 +25,10 @@ const server=http.createServer(async(req,res)=>{
  try{
   const u=new URL(req.url,'http://localhost');
   if(await passwordGate.handle(req,res,u))return;
+  if((req.method==='GET'||req.method==='HEAD')&&u.pathname==='/api/files/download'){
+   try{await downloadFile(req,res,u.searchParams.get('path'));}
+   catch(e){if(res.headersSent)res.destroy();else json(e.code==='ENOENT'?404:e.code==='EACCES'?403:400,{error:'无法下载文件：'+e.message});}return;
+  }
   if(req.method==='POST'){
    if(req.headers['x-codexweb-token']!==csrf)return json(403,{error:'请求校验失败'});
    if(req.headers.origin&&new URL(req.headers.origin).host!==req.headers.host)return json(403,{error:'禁止跨站请求'});

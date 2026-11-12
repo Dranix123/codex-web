@@ -22,7 +22,7 @@ test('scrypt 格式校验、正确密码和错误密码',async()=>{
 test('未解锁时拦截页面、私有脚本、项目和文件接口',async t=>{
  const base=await serve(t);
  assert.match(await (await fetch(base+'/')).text(),/输入访问密码/);
- for(const path of ['/api/bootstrap','/api/threads','/api/limits'])assert.equal((await fetch(base+path)).status,401);
+ for(const path of ['/api/bootstrap','/api/threads','/api/limits','/api/files/download?path=/tmp/private.txt'])assert.equal((await fetch(base+path)).status,401);
  for(const path of ['/api/files/browse','/api/files/upload','/api/projects/create'])assert.equal((await fetch(base+path,{method:'POST',body:'not authorised'})).status,401);
  const asset=await fetch(base+'/app.js',{redirect:'manual'});assert.equal(asset.status,303);assert.equal(asset.headers.get('location'),'/');
  const status=await (await fetch(base+'/auth/status')).json();assert.deepEqual(status,{configured:true,authenticated:false});
